@@ -1,0 +1,10 @@
+{
+  "name": "Shibani Roy",
+  "description": "An expressive AI companion, virtual friend, and personal assistant named Shibani Roy, built with Gemini Live API.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
