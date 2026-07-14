@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { Send, Trash2, RefreshCw, Copy, Check, MessageSquare, Sparkles } from "lucide-react";
 import { Message } from "../types";
 import Markdown from "./Markdown";
+import { ThemeId, THEMES } from "../utils/themes";
 
 interface ChatWindowProps {
   messages: Message[];
@@ -15,13 +16,22 @@ interface ChatWindowProps {
   isLoading: boolean;
   onClearHistory: () => void;
   onNewChat: () => void;
+  theme: ThemeId;
 }
 
-const QUICK_REPLIES = [
-  { text: "Tease me! 😜", label: "Playful" },
-  { text: "Bolo kemon acho? 😊", label: "Bengali" },
-  { text: "Hinglish me baat karein? 😏", label: "Hinglish" },
-  { text: "Tell me a witty joke", label: "Witty" },
+const CONVERSATION_STARTERS = [
+  "How's your day going? 😊",
+  "Play me something upbeat! 🎵",
+  "Tell me something interesting 💡",
+  "I need to vent for a bit... 🥺",
+  "How is the weather in Kolkata today? ⛅",
+  "Tease me! Let's see your witty side 😜",
+  "Bolo kemon acho? 😊 Let's chat in Bengali",
+  "Hinglish me baat karein? 😏",
+  "Suggest a cozy acoustic song for my mood 🍃",
+  "Tell me a deep secret 🤫",
+  "Suggest a relaxing track for stress relief 🧘‍♀️",
+  "What's your favorite memory of us so far? 💕"
 ];
 
 export default function ChatWindow({
@@ -30,10 +40,23 @@ export default function ChatWindow({
   isLoading,
   onClearHistory,
   onNewChat,
+  theme,
 }: ChatWindowProps) {
   const [input, setInput] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [starters, setStarters] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Generate a random selection of 5 starters
+  const rotateStarters = () => {
+    const shuffled = [...CONVERSATION_STARTERS].sort(() => 0.5 - Math.random());
+    setStarters(shuffled.slice(0, 5));
+  };
+
+  // Rotate starters when component mounts or messages change to empty
+  useEffect(() => {
+    rotateStarters();
+  }, [messages.length]);
 
   // Auto scroll to bottom
   useEffect(() => {
@@ -56,8 +79,10 @@ export default function ChatWindow({
     });
   };
 
+  const activeTheme = THEMES[theme];
+
   return (
-    <div id="chat-window-card" className="flex flex-col h-[520px] rounded-3xl border border-white/10 bg-black/40 backdrop-blur-xl shadow-2xl overflow-hidden">
+    <div id="chat-window-card" className={`flex flex-col h-[520px] rounded-3xl border ${activeTheme.borderColor} ${activeTheme.cardBg} backdrop-blur-xl shadow-2xl overflow-hidden`}>
       {/* Top Controller Tray */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 bg-white/5 select-none">
         <div className="flex items-center gap-2">
@@ -91,20 +116,24 @@ export default function ChatWindow({
 
       {/* Message List area */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4 min-h-0 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
-        {messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-center p-6 space-y-4">
-            <div className="w-16 h-16 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
-              <Sparkles className="w-8 h-8 animate-pulse" />
-            </div>
-            <div>
-              <h3 className="text-lg font-medium text-white">Ask Shibani anything</h3>
-              <p className="text-sm text-gray-400 mt-1 max-w-sm">
-                Say hello, tease her, test her multilingual skills, or ask her to search the web!
-              </p>
-            </div>
-          </div>
-        ) : (
-          messages.map((msg) => {
+        {(() => {
+          const visibleMessages = messages.filter(msg => !msg.isHidden);
+          if (visibleMessages.length === 0) {
+            return (
+              <div className="flex flex-col items-center justify-center h-full text-center p-6 space-y-4">
+                <div className="w-16 h-16 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
+                  <Sparkles className="w-8 h-8 animate-pulse" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-medium text-white">Ask Shibani anything</h3>
+                  <p className="text-sm text-gray-400 mt-1 max-w-sm">
+                    Say hello, tease her, test her multilingual skills, or ask her to search the web!
+                  </p>
+                </div>
+              </div>
+            );
+          }
+          return visibleMessages.map((msg) => {
             const isAssistant = msg.role === "assistant";
             return (
               <div
@@ -153,8 +182,8 @@ export default function ChatWindow({
                 </div>
               </div>
             );
-          })
-        )}
+          });
+        })()}
 
         {/* Dynamic Typing Indicator */}
         {isLoading && (
@@ -172,15 +201,16 @@ export default function ChatWindow({
 
       {/* Quick reply tags */}
       {messages.length === 0 && (
-        <div className="px-6 py-2 select-none">
+        <div className="px-6 py-3 select-none border-t border-white/5 bg-black/20">
+          <p className="text-center text-[10px] uppercase tracking-widest text-gray-500 mb-2 font-mono">Suggested Conversations</p>
           <div className="flex flex-wrap gap-2 justify-center">
-            {QUICK_REPLIES.map((reply, i) => (
+            {starters.map((reply, i) => (
               <button
                 key={i}
-                onClick={() => onSendMessage(reply.text)}
-                className="px-3.5 py-1.5 rounded-full text-xs font-medium border border-white/5 bg-white/5 hover:bg-rose-500/10 hover:border-rose-500/20 hover:text-rose-300 transition-all cursor-pointer shadow-sm"
+                onClick={() => onSendMessage(reply)}
+                className="px-3.5 py-1.5 rounded-full text-xs font-medium border border-white/5 bg-white/5 hover:bg-white/10 text-gray-300 hover:text-white transition-all cursor-pointer shadow-sm"
               >
-                {reply.text}
+                {reply}
               </button>
             ))}
           </div>
@@ -196,12 +226,12 @@ export default function ChatWindow({
             onChange={(e) => setInput(e.target.value)}
             placeholder={isLoading ? "Shibani is typing..." : "Type a message to Shibani Roy..."}
             disabled={isLoading}
-            className="flex-1 px-4 py-3 rounded-xl border border-white/10 bg-black/50 text-white placeholder-gray-500 text-sm focus:outline-none focus:border-rose-500/40 focus:ring-1 focus:ring-rose-500/20 transition-all disabled:opacity-50"
+            className={`flex-1 px-4 py-3 rounded-xl border border-white/10 bg-black/50 text-white placeholder-gray-500 text-sm focus:outline-none focus:ring-1 focus:ring-white/20 transition-all disabled:opacity-50`}
           />
           <button
             type="submit"
             disabled={!input.trim() || isLoading}
-            className="p-3 rounded-xl bg-gradient-to-r from-rose-500 to-pink-500 text-white hover:shadow-[0_0_15px_rgba(244,63,94,0.4)] hover:brightness-110 disabled:opacity-40 disabled:hover:shadow-none disabled:hover:brightness-100 transition-all cursor-pointer flex items-center justify-center shrink-0"
+            className={`p-3 rounded-xl bg-gradient-to-r ${THEMES[theme].accentGradient} text-white hover:brightness-110 disabled:opacity-40 disabled:hover:shadow-none disabled:hover:brightness-100 transition-all cursor-pointer flex items-center justify-center shrink-0`}
             title="Send Message"
           >
             <Send className="w-4 h-4" />

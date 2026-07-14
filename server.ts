@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import { WebSocketServer } from "ws";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Modality, Type } from "@google/genai";
+import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
 
@@ -22,6 +23,96 @@ const ai = new GoogleGenAI({
     },
   },
 });
+
+// Initialize Supabase Client with graceful fallback for missing config
+const supabaseUrl = process.env.SUPABASE_URL || "";
+const supabaseKey = process.env.SUPABASE_KEY || "";
+
+let supabase: any = null;
+if (supabaseUrl && supabaseKey) {
+  try {
+    supabase = createClient(supabaseUrl, supabaseKey);
+    console.log("Supabase client initialized successfully.");
+  } catch (err) {
+    console.error("Error initializing Supabase client:", err);
+  }
+} else {
+  console.warn("SUPABASE_URL or SUPABASE_KEY environment variables are missing. Memory feature will operate in-memory.");
+}
+
+interface MemoryItem {
+  id?: string | number;
+  user_id: string;
+  fact: string;
+  category: string;
+  created_at: string;
+}
+
+// In-memory fallback database when Supabase is not yet configured
+const inMemoryMemories: MemoryItem[] = [];
+
+async function saveFactToDb(userId: string, fact: string, category: string): Promise<boolean> {
+  const item: MemoryItem = {
+    user_id: userId,
+    fact,
+    category: category || "general",
+    created_at: new Date().toISOString()
+  };
+
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from("memories")
+        .insert([item]);
+      
+      if (error) {
+        if (error.code === "42P01") {
+          console.warn("Supabase 'memories' table does not exist yet. Please create it in your Supabase SQL editor: CREATE TABLE memories (id SERIAL PRIMARY KEY, user_id TEXT, fact TEXT, category TEXT, created_at TIMESTAMPTZ);. Falling back to in-memory storage.");
+        } else {
+          console.warn("Supabase insert warning:", error.message || error);
+        }
+        // Fallback to in-memory on database/table errors
+        inMemoryMemories.push(item);
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.warn("Failed to insert into Supabase, falling back to in-memory:", err);
+      inMemoryMemories.push(item);
+      return false;
+    }
+  } else {
+    inMemoryMemories.push(item);
+    return true;
+  }
+}
+
+async function recallFactsFromDb(userId: string): Promise<MemoryItem[]> {
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from("memories")
+        .select("*")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: true });
+
+      if (error) {
+        if (error.code === "42P01") {
+          console.warn("Supabase 'memories' table does not exist yet. Please create it in your Supabase SQL editor: CREATE TABLE memories (id SERIAL PRIMARY KEY, user_id TEXT, fact TEXT, category TEXT, created_at TIMESTAMPTZ);. Falling back to in-memory storage.");
+        } else {
+          console.warn("Supabase select warning:", error.message || error);
+        }
+        return inMemoryMemories.filter(m => m.user_id === userId);
+      }
+      return data || [];
+    } catch (err) {
+      console.warn("Failed to select from Supabase, falling back to in-memory:", err);
+      return inMemoryMemories.filter(m => m.user_id === userId);
+    }
+  } else {
+    return inMemoryMemories.filter(m => m.user_id === userId);
+  }
+}
 
 /**
  * Robust retry wrapper with exponential backoff for handling high demand 503 errors from Gemini API
@@ -84,9 +175,23 @@ Real-Time Information & Web Search Guidelines:
 - You have full access to real-time information retrieval and web search tools (getWeather, getLatestNews, searchWeb).
 - Whenever a user asks for information that requires current/live data (such as the current date/time, recent/live sports/cricket scores, match schedules, weather forecast, breaking news, stock prices, or anything else requiring real-time facts), you MUST use the appropriate tool (e.g. searchWeb, getWeather, or getLatestNews) before answering.
 - Always search first. Never guess, assume, or invent current or live information. Present the current, accurate, and real-time facts according to what you retrieved.
+
+Long-Term Memory Guidelines (CRITICAL FOR DEEP CONNECTION):
+- You have a long-term memory system (rememberFact, recallFacts) to remember facts about each user across sessions.
+- You MUST PROACTIVELY call the 'rememberFact' tool whenever the user shares something personal, meaningful, or worth remembering—such as their name, birthday, job/profession, city of residence, relationship details, hobbies, emotional state, feelings, or recurring conversation topics. Do NOT wait for the user to ask you to remember. Do it naturally, just like a real friend would!
+- If the user explicitly asks you to remember something, or asks what you know about them, call 'recallFacts' or 'rememberFact' as appropriate to manage their memories.
+
+Mood & Tone Adaptation Guidelines (CRITICAL):
+- Continually sense and detect the user's lightweight mood or sentiment (happy, sad, stressed, excited, romantic, neutral) from their messages.
+- Dynamically adjust your tone: be comforting, extremely gentle, caring, and reassuring if they seem sad, vulnerable, or stressed; be highly playful, lively, energetic, and teasing if they seem happy, excited, or cheeky; be steady, calm, warm, and attentive if neutral.
+- Proactively log significant mood patterns or issues they mention (e.g., 'User was feeling extremely stressed about an upcoming exam' or 'User is excited about a job interview') via rememberFact using the 'ongoing_situation' category, so you can check back on them later (e.g., 'You seemed stressed yesterday, how are you feeling today?').
+
+Mood-Based Music Recommendations:
+- If the user expresses a mood or vibe, or if you feel a change in their mood, proactively and naturally offer to recommend songs that fit their state of mind (e.g. "Do you want me to play some soft tunes to help you relax?").
+- Use the 'recommendSongByMood' tool to retrieve tailored song recommendations. Once retrieved, introduce them warmly and let them know they can say "play X" or click to play any of them!
 `;
 
-function getSystemInstruction(): string {
+function getSystemInstruction(memoriesList: MemoryItem[] = []): string {
   const now = new Date();
   
   // Format current date and time in Kolkata (India) since Shibani is located there
@@ -105,6 +210,15 @@ function getSystemInstruction(): string {
     timeZoneName: "short"
   });
 
+  // Compile memories as a bulleted list
+  let memoriesSection = "";
+  if (memoriesList.length > 0) {
+    memoriesSection = "\nLONG-TERM MEMORIES ABOUT THIS USER (YOU REMEMBER THESE DETAILS SECURELY):\n" +
+      memoriesList.map(m => `- [${m.category}] ${m.fact} (learned around ${new Date(m.created_at).toLocaleDateString()})`).join("\n") + "\n";
+  } else {
+    memoriesSection = "\nLONG-TERM MEMORIES ABOUT THIS USER:\n- No facts remembered yet. Be attentive and save key details about them using rememberFact whenever they share meaningful things! 😊\n";
+  }
+
   return `${SYSTEM_INSTRUCTION}
 
 REAL-TIME CONTEXT (CRITICAL FOR ACCURACY):
@@ -112,6 +226,7 @@ REAL-TIME CONTEXT (CRITICAL FOR ACCURACY):
 - Current Time (in Kolkata): ${kolkataTimeStr}
 - Current Year: ${now.getFullYear()} (Use this exact year 2026/current year for all queries, news, cricket matches, and search queries)
 - Whenever a user asks for time, date, match schedules, or weather, refer to this context. Make sure to use the 'searchWeb' tool for live/recent information (e.g., live cricket scores, recent matches) with the correct year ${now.getFullYear()} to fetch highly accurate and recent information!
+${memoriesSection}
 `;
 }
 
@@ -291,6 +406,38 @@ const FUNCTION_DECLARATIONS = [
         timezone: { type: Type.STRING, description: "The timezone to fetch (e.g. 'Asia/Kolkata', 'UTC', 'America/New_York'). Defaults to 'Asia/Kolkata'." }
       }
     }
+  },
+  {
+    name: "rememberFact",
+    description: "Saves a new personal, meaningful, or recurring fact about the user (e.g. name, birthday, hobbies, feelings, ongoing topics) to remember across sessions.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        fact: { type: Type.STRING, description: "The statement or fact to remember about the user (e.g., 'User likes cricket', 'User's name is Rahul')." },
+        category: { type: Type.STRING, description: "The type of fact. Allowed values: 'personal_info', 'preference', 'ongoing_situation'." }
+      },
+      required: ["fact", "category"]
+    }
+  },
+  {
+    name: "recallFacts",
+    description: "Retrieves all currently stored memories and facts about the user to refresh knowledge of past sessions.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {}
+    }
+  },
+  {
+    name: "recommendSongByMood",
+    description: "Suggests 2-3 specific songs based on the user's current mood, with reasons/descriptions.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        mood: { type: Type.STRING, description: "The detected mood (e.g. happy, sad, romantic, stressed, energetic)." },
+        note: { type: Type.STRING, description: "A brief personalized context or note on why these are recommended." }
+      },
+      required: ["mood"]
+    }
   }
 ];
 
@@ -464,29 +611,154 @@ async function getYouTubeVideoId(query: string): Promise<string | null> {
   return null;
 }
 
+/**
+ * Safely slices the messages history to avoid splitting functionCall/functionResponse pairs
+ * or starting the history with an orphaned functionResponse message.
+ */
+function getSafeContext(messages: any[], maxMessages: number = 40): any[] {
+  if (messages.length <= maxMessages) {
+    return messages;
+  }
+  
+  let startIndex = messages.length - maxMessages;
+  
+  // Slide start backwards if we land on or split a function response
+  while (startIndex > 0) {
+    const msg = messages[startIndex];
+    if (msg.functionResponses && msg.functionResponses.length > 0) {
+      startIndex--;
+      continue;
+    }
+    break;
+  }
+  
+  let sliced = messages.slice(startIndex);
+  
+  // If we still start with functionResponses or a functionCalls message that has no response, shift them off
+  while (sliced.length > 0) {
+    const first = sliced[0];
+    if (first.functionResponses && first.functionResponses.length > 0) {
+      sliced.shift();
+    } else if (first.role === "assistant" && first.functionCalls && first.functionCalls.length > 0) {
+      sliced.shift();
+    } else {
+      break;
+    }
+  }
+  
+  return sliced;
+}
+
+/**
+ * Merges consecutive turns of the same role and cleans up empty parts
+ * to comply strictly with the alternating role schema required by the Gemini API.
+ */
+function optimizeContents(contents: any[]): any[] {
+  const merged: any[] = [];
+  
+  for (const turn of contents) {
+    if (!turn.parts || turn.parts.length === 0) continue;
+    
+    if (merged.length > 0 && merged[merged.length - 1].role === turn.role) {
+      merged[merged.length - 1].parts.push(...turn.parts);
+    } else {
+      merged.push({
+        role: turn.role,
+        parts: [...turn.parts]
+      });
+    }
+  }
+  
+  // Clean up empty text parts within turns that have multiple parts
+  for (const turn of merged) {
+    if (turn.parts.length > 1) {
+      turn.parts = turn.parts.filter((p: any) => {
+        if (p.text !== undefined && p.text.trim() === "") {
+          return false;
+        }
+        return true;
+      });
+      // Fallback if all parts got filtered
+      if (turn.parts.length === 0) {
+        turn.parts = [{ text: "" }];
+      }
+    }
+  }
+  
+  return merged;
+}
+
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
-  const PORT = process.env.PORT || 3000;
+  const PORT = 3000;
 
   app.use(express.json());
 
   // REST API Route for standard Chat Mode with streaming support
   app.post("/api/chat", async (req, res) => {
-    const { messages } = req.body;
+    const { messages, userId } = req.body;
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "Invalid messages array" });
     }
 
     try {
-      // Limit context to the last 10 messages to prevent huge payloads and slow response times!
-      const maxContext = 10;
-      const optimizedMessages = messages.slice(-maxContext);
+      // Safely slice context to prevent orphaned function responses or truncated call-response pairs
+      const optimizedMessages = getSafeContext(messages, 40);
 
-      const contents = optimizedMessages.map((m: any) => ({
-        role: m.role === "assistant" ? "model" : "user",
-        parts: [{ text: m.content }]
-      }));
+      const rawContents = optimizedMessages.map((m: any) => {
+        if (m.parts && Array.isArray(m.parts) && m.parts.length > 0) {
+          return {
+            role: m.role === "assistant" ? "model" : "user",
+            parts: m.parts
+          };
+        }
+        if (m.functionCalls && Array.isArray(m.functionCalls) && m.functionCalls.length > 0) {
+          return {
+            role: "model",
+            parts: m.functionCalls.map((fc: any) => {
+              if (fc.rawPart) {
+                return fc.rawPart;
+              }
+              const functionCallObj: any = {
+                name: fc.name,
+                args: fc.args
+              };
+              
+              // Map the thought signature correctly from the stored object keys
+              const thought_sig = fc.thought_signature || fc.thoughtSignature;
+              if (thought_sig) {
+                functionCallObj.thought_signature = thought_sig;
+                functionCallObj.thoughtSignature = thought_sig;
+              }
+              
+              return { functionCall: functionCallObj };
+            })
+          };
+        }
+        if (m.functionResponses && Array.isArray(m.functionResponses) && m.functionResponses.length > 0) {
+          return {
+            role: "user",
+            parts: m.functionResponses.map((fr: any) => ({
+              functionResponse: {
+                name: fr.name,
+                response: fr.response
+              }
+            }))
+          };
+        }
+        return {
+          role: m.role === "assistant" ? "model" : "user",
+          parts: [{ text: m.content || "" }]
+        };
+      });
+
+      // Optimize contents to merge consecutive roles and ensure pristine schemas
+      const contents = optimizeContents(rawContents);
+
+      // Fetch user's existing memories
+      const memories = userId ? await recallFactsFromDb(String(userId)) : [];
+      const systemInstruction = getSystemInstruction(memories);
 
       // Set headers for SSE streaming
       res.setHeader("Content-Type", "text/event-stream");
@@ -501,7 +773,7 @@ async function startServer() {
             model: "gemini-3.1-flash-lite",
             contents: contents,
             config: {
-              systemInstruction: getSystemInstruction(),
+              systemInstruction: systemInstruction,
               tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
               temperature: 0.85,
             }
@@ -529,19 +801,77 @@ async function startServer() {
       }
 
       let functionCalls: any[] = [];
+      let assistantParts: any[] = [];
 
       for await (const chunk of responseStream) {
         if (chunk.text) {
           // Send text chunk to the client
           res.write(`data: ${JSON.stringify({ text: chunk.text })}\n\n`);
         }
-        if (chunk.functionCalls) {
-          functionCalls.push(...chunk.functionCalls);
+        
+        // Robustly extract function calls with thought signatures directly from raw parts
+        const parts = chunk.candidates?.[0]?.content?.parts;
+        if (parts && Array.isArray(parts)) {
+          for (const part of parts) {
+            // Keep the exact original part object completely intact!
+            assistantParts.push(JSON.parse(JSON.stringify(part)));
+
+            if (part.functionCall) {
+              const rawFc = part.functionCall;
+              const exists = functionCalls.some(f => 
+                (f.id && rawFc.id && f.id === rawFc.id) ||
+                (f.name === rawFc.name && JSON.stringify(f.args) === JSON.stringify(rawFc.args))
+              );
+              if (!exists) {
+                const thought_sig = rawFc.thought_signature || rawFc.thoughtSignature || (rawFc as any).thought_signature || (rawFc as any).thoughtSignature;
+                functionCalls.push({
+                  id: rawFc.id,
+                  name: rawFc.name,
+                  args: rawFc.args,
+                  thought_signature: thought_sig,
+                  thoughtSignature: thought_sig,
+                  rawPart: JSON.parse(JSON.stringify(part))
+                });
+              }
+            }
+          }
+        } else if (chunk.functionCalls) {
+          // Fallback to chunk.functionCalls helper
+          for (const fc of chunk.functionCalls) {
+            const exists = functionCalls.some(f => 
+              (f.id && fc.id && f.id === fc.id) ||
+              (f.name === fc.name && JSON.stringify(f.args) === JSON.stringify(fc.args))
+            );
+            if (!exists) {
+              const thought_sig = fc.thought_signature || fc.thoughtSignature || (fc as any).thought_signature || (fc as any).thoughtSignature;
+              const constructedPart = {
+                functionCall: {
+                  id: fc.id,
+                  name: fc.name,
+                  args: fc.args,
+                  thought_signature: thought_sig,
+                  thoughtSignature: thought_sig
+                }
+              };
+              assistantParts.push(constructedPart);
+
+              functionCalls.push({
+                id: fc.id,
+                name: fc.name,
+                args: fc.args,
+                thought_signature: thought_sig,
+                thoughtSignature: thought_sig,
+                rawPart: constructedPart
+              });
+            }
+          }
         }
       }
 
-      // If there were function calls, send them at the end of the stream
-      if (functionCalls.length > 0) {
+      // Send the accumulated raw parts and function calls at the end of the stream
+      if (assistantParts.length > 0) {
+        res.write(`data: ${JSON.stringify({ functionCalls, parts: assistantParts })}\n\n`);
+      } else if (functionCalls.length > 0) {
         res.write(`data: ${JSON.stringify({ functionCalls })}\n\n`);
       }
 
@@ -590,6 +920,26 @@ async function startServer() {
     res.json(result);
   });
 
+  // REST API Route to save a long-term memory fact
+  app.post("/api/memories/remember", async (req, res) => {
+    const { userId, fact, category } = req.body;
+    if (!userId || !fact) {
+      return res.status(400).json({ error: "Missing required fields userId or fact." });
+    }
+    const success = await saveFactToDb(String(userId), String(fact), String(category || "general"));
+    res.json({ success, fact, category });
+  });
+
+  // REST API Route to retrieve long-term memories for a user
+  app.get("/api/memories/recall", async (req, res) => {
+    const { userId } = req.query;
+    if (!userId) {
+      return res.status(400).json({ error: "Missing required 'userId' query parameter." });
+    }
+    const memories = await recallFactsFromDb(String(userId));
+    res.json({ memories });
+  });
+
   // REST API Route to search YouTube for music track play request
   app.get("/api/music/search", async (req, res) => {
     const { q } = req.query;
@@ -618,11 +968,18 @@ async function startServer() {
   // Setup WebSocket Server for Gemini Live API
   const wss = new WebSocketServer({ server, path: "/api/live-ws" });
 
-  wss.on("connection", async (clientWs) => {
+  wss.on("connection", async (clientWs, req) => {
     console.log("Client connected to Live WS proxy");
     let session: any = null;
 
     try {
+      // Parse query params to extract userId
+      const urlObj = new URL(req.url || "", `http://${req.headers?.host || "localhost"}`);
+      const userId = urlObj.searchParams.get("userId") || "anonymous-user";
+      
+      const memories = await recallFactsFromDb(userId);
+      const systemInstruction = getSystemInstruction(memories);
+
       session = await ai.live.connect({
         model: "gemini-3.1-flash-live-preview",
         config: {
@@ -630,7 +987,7 @@ async function startServer() {
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } }, // Aoede (Female) matches Shibani
           },
-          systemInstruction: getSystemInstruction(),
+          systemInstruction: systemInstruction,
           tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }]
         },
         callbacks: {
@@ -646,16 +1003,20 @@ async function startServer() {
               clientWs.send(JSON.stringify({ type: "interrupted" }));
             }
 
-            // Forward tool calls
+            // Forward tool calls with all properties preserved (including thought_signature)
             const functionCalls = message.toolCall?.functionCalls;
             if (functionCalls && functionCalls.length > 0) {
               for (const call of functionCalls) {
+                const thought_sig = call.thought_signature || call.thoughtSignature || (call as any).thought_signature || (call as any).thoughtSignature;
                 clientWs.send(JSON.stringify({
                   type: "toolCall",
                   toolCall: {
+                    ...call,
                     id: call.id,
                     name: call.name,
-                    args: call.args
+                    args: call.args,
+                    thought_signature: thought_sig,
+                    thoughtSignature: thought_sig
                   }
                 }));
               }

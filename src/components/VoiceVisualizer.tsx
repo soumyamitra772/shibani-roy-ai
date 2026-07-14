@@ -7,6 +7,7 @@ import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Mic, MicOff, PhoneOff, Radio, Sparkles } from "lucide-react";
 import { AssistantState } from "../types";
+import { ThemeId, THEMES } from "../utils/themes";
 
 interface VoiceVisualizerProps {
   state: AssistantState;
@@ -15,6 +16,7 @@ interface VoiceVisualizerProps {
   onToggleMute: () => void;
   onConnect: () => void;
   onDisconnect: () => void;
+  theme: ThemeId;
 }
 
 export default function VoiceVisualizer({
@@ -24,6 +26,7 @@ export default function VoiceVisualizer({
   onToggleMute,
   onConnect,
   onDisconnect,
+  theme,
 }: VoiceVisualizerProps) {
   const [bars, setBars] = useState<number[]>(Array(24).fill(10));
 
@@ -138,9 +141,10 @@ export default function VoiceVisualizer({
   };
 
   const colors = getStateColors();
+  const activeTheme = THEMES[theme];
 
   return (
-    <div id="voice-visualizer-card" className="relative flex flex-col items-center justify-between h-[480px] p-6 rounded-3xl border border-white/10 bg-black/40 backdrop-blur-xl shadow-2xl overflow-hidden group">
+    <div id="voice-visualizer-card" className={`relative flex flex-col items-center justify-between h-[480px] p-6 rounded-3xl border ${activeTheme.borderColor} ${activeTheme.cardBg} backdrop-blur-xl shadow-2xl overflow-hidden group`}>
       
       {/* Background glow overlay */}
       <div
@@ -270,7 +274,7 @@ export default function VoiceVisualizer({
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
             onClick={onConnect}
-            className="flex items-center gap-2.5 px-6 py-3 rounded-full bg-gradient-to-r from-rose-500 to-pink-500 text-white font-medium shadow-[0_4px_20px_rgba(244,63,94,0.4)] hover:shadow-[0_4px_30px_rgba(244,63,94,0.6)] hover:brightness-110 transition-all duration-300 cursor-pointer"
+            className={`flex items-center gap-2.5 px-6 py-3 rounded-full bg-gradient-to-r ${activeTheme.accentGradient} text-white font-medium shadow-lg hover:brightness-110 transition-all duration-300 cursor-pointer`}
           >
             <Mic className="w-5 h-5" />
             <span>Connect Voice</span>

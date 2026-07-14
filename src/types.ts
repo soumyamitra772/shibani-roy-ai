@@ -20,6 +20,10 @@ export interface Message {
   timestamp: string;
   isToolCall?: boolean;
   toolName?: string;
+  functionCalls?: any[];
+  functionResponses?: any[];
+  parts?: any[];
+  isHidden?: boolean;
 }
 
 export type InteractionMode = "voice" | "chat";

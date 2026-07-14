@@ -13,12 +13,23 @@ import { useVoiceConnection } from "./hooks/useVoiceConnection";
 import { Message, InteractionMode } from "./types";
 import { ToolExecutor } from "./services/ToolExecutor";
 import { MusicPlayer } from "./components/MusicPlayer";
+import { getOrCreateUserId } from "./utils/userId";
+import { ThemeId, THEMES } from "./utils/themes";
 
 export default function App() {
+  const [theme, setTheme] = useState<ThemeId>(() => {
+    const saved = localStorage.getItem("shibani-theme");
+    return (saved as ThemeId) || "classic";
+  });
   const [mode, setMode] = useState<InteractionMode>("voice");
   const [chatMessages, setChatMessages] = useState<Message[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
   const [notification, setNotification] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
+
+  // Sync theme changes to localStorage
+  useEffect(() => {
+    localStorage.setItem("shibani-theme", theme);
+  }, [theme]);
 
   // Trigger a self-fading overlay notification for tool executions
   const triggerNotification = (message: string, type: "success" | "error" | "info" = "success") => {
@@ -79,109 +90,190 @@ export default function App() {
       timestamp: now
     };
     
-    const updatedMessages = [...chatMessages, userMsg];
-    setChatMessages(updatedMessages);
+    let currentMessages = [...chatMessages, userMsg];
+    setChatMessages(currentMessages);
     setChatLoading(true);
 
     try {
-      // 2. Dispatch REST call to our Express secure Gemini proxy with streaming support
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: updatedMessages.map(m => ({ role: m.role, content: m.content }))
-        })
-      });
+      let loopCount = 0;
+      const maxLoops = 5;
+      let continueLoop = true;
 
-      if (!response.ok) {
-        throw new Error("Failed to connect to Shibani. Check API server.");
-      }
+      while (continueLoop && loopCount < maxLoops) {
+        loopCount++;
+        continueLoop = false; // default to stop unless we get a functionCall
 
-      const replyTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      const assistantMessageId = `assistant-${Math.random()}`;
+        // Dispatch REST call to our Express secure Gemini proxy with streaming support
+        const response = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId: getOrCreateUserId(),
+            messages: currentMessages.map(m => ({
+              role: m.role,
+              content: m.content,
+              parts: m.parts,
+              functionCalls: m.functionCalls,
+              functionResponses: m.functionResponses
+            }))
+          })
+        });
 
-      // 3. Add an empty assistant message that we will stream text into
-      setChatMessages((prev) => [
-        ...prev,
-        {
-          id: assistantMessageId,
-          role: "assistant",
-          content: "",
-          timestamp: replyTime
+        if (!response.ok) {
+          throw new Error("Failed to connect to Shibani. Check API server.");
         }
-      ]);
 
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      if (!reader) {
-        throw new Error("No response body reader available.");
-      }
+        const replyTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        const assistantMessageId = `assistant-${Math.random()}`;
 
-      let buffer = "";
-      let accumulatedText = "";
-      let functionCalls: any[] = [];
+        // Add an empty assistant message that we will stream text into
+        setChatMessages((prev) => [
+          ...prev,
+          {
+            id: assistantMessageId,
+            role: "assistant",
+            content: "",
+            timestamp: replyTime
+          }
+        ]);
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        if (!reader) {
+          throw new Error("No response body reader available.");
+        }
 
-        buffer += decoder.decode(value, { stream: true });
-        
-        // SSE messages are separated by double newlines
-        const lines = buffer.split("\n\n");
-        // Save the last line if it's incomplete
-        buffer = lines.pop() || "";
+        let buffer = "";
+        let accumulatedText = "";
+        let functionCalls: any[] = [];
+        let assistantParts: any[] = [];
 
-        for (const line of lines) {
-          const trimmedLine = line.trim();
-          if (trimmedLine.startsWith("data: ")) {
-            const rawData = trimmedLine.substring(6).trim();
-            if (rawData === "[DONE]") {
-              continue;
-            }
-            try {
-              const parsed = JSON.parse(rawData);
-              if (parsed.error) {
-                throw new Error(parsed.error);
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          
+          // SSE messages are separated by double newlines
+          const lines = buffer.split("\n\n");
+          // Save the last line if it's incomplete
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            const trimmedLine = line.trim();
+            if (trimmedLine.startsWith("data: ")) {
+              const rawData = trimmedLine.substring(6).trim();
+              if (rawData === "[DONE]") {
+                continue;
               }
-              if (parsed.text) {
-                accumulatedText += parsed.text;
-                // Update the assistant message in-place
-                setChatMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === assistantMessageId ? { ...m, content: accumulatedText } : m
-                  )
-                );
+              try {
+                const parsed = JSON.parse(rawData);
+                if (parsed.error) {
+                  throw new Error(parsed.error);
+                }
+                if (parsed.text) {
+                  accumulatedText += parsed.text;
+                  // Update the assistant message in-place
+                  setChatMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === assistantMessageId ? { ...m, content: accumulatedText } : m
+                    )
+                  );
+                }
+                if (parsed.functionCalls) {
+                  functionCalls.push(...parsed.functionCalls);
+                }
+                if (parsed.parts) {
+                  assistantParts.push(...parsed.parts);
+                }
+              } catch (e) {
+                console.error("Error parsing stream line:", line, e);
               }
-              if (parsed.functionCalls) {
-                functionCalls.push(...parsed.functionCalls);
-              }
-            } catch (e) {
-              console.error("Error parsing stream line:", line, e);
             }
           }
         }
-      }
 
-      // 4. Execute client-side tool calls if Gemini requested them
-      if (functionCalls.length > 0) {
-        for (const call of functionCalls) {
-          const result = await ToolExecutor.execute(call);
-          
-          // Append log to conversation history
-          setChatMessages((prev) => [
-            ...prev,
-            {
-              id: `tool-${Math.random()}`,
-              role: "assistant",
-              content: result.message,
-              timestamp: replyTime,
-              isToolCall: true,
-              toolName: call.name
-            }
-          ]);
+        // Clean up placeholder if we got no text and we have function calls
+        if (!accumulatedText) {
+          setChatMessages((prev) => prev.filter((m) => m.id !== assistantMessageId));
+        } else {
+          // Store raw text parts for clean text message history too
+          setChatMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantMessageId 
+                ? { 
+                    ...m, 
+                    parts: assistantParts.length > 0 ? assistantParts : [{ text: accumulatedText }] 
+                  } 
+                : m
+            )
+          );
+          // Sync with local currentMessages variable
+          currentMessages = currentMessages.map((m) =>
+            m.id === assistantMessageId 
+              ? { 
+                  ...m, 
+                  content: accumulatedText,
+                  parts: assistantParts.length > 0 ? assistantParts : [{ text: accumulatedText }] 
+                } 
+              : m
+          );
+        }
 
-          triggerNotification(result.message, result.success ? "success" : "error");
+        if (functionCalls.length > 0) {
+          // We have function calls! We must execute them and continue the loop.
+          continueLoop = true;
+
+          // Execute all function calls in parallel
+          const results = await Promise.all(
+            functionCalls.map(async (call) => {
+              const result = await ToolExecutor.execute(call);
+              // Trigger a subtle in-app floating banner for tool executions
+              triggerNotification(result.message, result.success ? "success" : "error");
+              return result;
+            })
+          );
+
+          // Append hidden system records of the function call & responses to the history
+          const modelCallMsg: Message = {
+            id: `model-call-${Math.random()}`,
+            role: "assistant",
+            content: "",
+            timestamp: replyTime,
+            parts: assistantParts.length > 0 ? assistantParts : functionCalls.map(fc => fc.rawPart || {
+              functionCall: {
+                id: fc.id,
+                name: fc.name,
+                args: fc.args,
+                thought_signature: fc.thought_signature || fc.thoughtSignature,
+                thoughtSignature: fc.thought_signature || fc.thoughtSignature
+              }
+            }),
+            functionCalls,
+            isHidden: true
+          };
+
+          const userRespMsg: Message = {
+            id: `user-resp-${Math.random()}`,
+            role: "user",
+            content: "",
+            timestamp: replyTime,
+            parts: results.map((r, idx) => ({
+              functionResponse: {
+                name: functionCalls[idx].name,
+                response: r.output
+              }
+            })),
+            functionResponses: results.map((r, idx) => ({
+              name: functionCalls[idx].name,
+              response: r.output
+            })),
+            isHidden: true
+          };
+
+          // Update local React state and local variable for next API turn
+          setChatMessages((prev) => [...prev, modelCallMsg, userRespMsg]);
+          currentMessages = [...currentMessages, modelCallMsg, userRespMsg];
         }
       }
 
@@ -220,20 +312,24 @@ export default function App() {
   };
 
   return (
-    <div className="relative min-h-screen bg-[#09090b] text-white flex flex-col font-sans overflow-x-hidden">
+    <div className={`relative min-h-screen ${THEMES[theme].bgClass} text-white flex flex-col font-sans overflow-x-hidden transition-colors duration-500`}>
       
       {/* Premium glowing background orbs */}
       <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none -z-20">
-        <div className="absolute top-[-10%] left-[-10%] w-[600px] h-[600px] rounded-full bg-rose-500/10 blur-[150px] animate-pulse" style={{ animationDuration: "12s" }} />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[700px] h-[700px] rounded-full bg-violet-600/10 blur-[180px] animate-pulse" style={{ animationDuration: "15s" }} />
-        <div className="absolute top-[40%] left-[30%] w-[500px] h-[500px] rounded-full bg-pink-600/5 blur-[160px] animate-pulse" style={{ animationDuration: "20s" }} />
+        {THEMES[theme].orbs.map((orbClass, index) => (
+          <div
+            key={index}
+            className={`absolute rounded-full blur-[150px] animate-pulse ${orbClass}`}
+            style={{ animationDuration: index === 0 ? "12s" : index === 1 ? "15s" : "20s" }}
+          />
+        ))}
       </div>
 
       {/* Main Container */}
       <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-6 flex flex-col gap-6">
         
         {/* Header Block */}
-        <Header mode={mode} onModeChange={handleModeChange} state={state} />
+        <Header mode={mode} onModeChange={handleModeChange} state={state} theme={theme} onThemeChange={setTheme} />
 
         {/* Dynamic sliding panel layout */}
         <div className="flex-1 w-full max-w-4xl mx-auto flex flex-col justify-center min-h-[500px]">
@@ -254,6 +350,7 @@ export default function App() {
                   onToggleMute={toggleMute}
                   onConnect={connect}
                   onDisconnect={disconnect}
+                  theme={theme}
                 />
               </motion.div>
             ) : (
@@ -271,6 +368,7 @@ export default function App() {
                   isLoading={chatLoading}
                   onClearHistory={handleClearHistory}
                   onNewChat={handleNewChat}
+                  theme={theme}
                 />
               </motion.div>
             )}

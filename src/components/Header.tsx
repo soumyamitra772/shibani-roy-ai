@@ -5,16 +5,19 @@
 
 import React from "react";
 import { motion } from "motion/react";
-import { Mic, MessageSquare, Radio, Github } from "lucide-react";
+import { Mic, MessageSquare, Radio, Github, Palette } from "lucide-react";
 import { InteractionMode, AssistantState } from "../types";
+import { ThemeId, THEMES } from "../utils/themes";
 
 interface HeaderProps {
   mode: InteractionMode;
   onModeChange: (mode: InteractionMode) => void;
   state: AssistantState;
+  theme: ThemeId;
+  onThemeChange: (theme: ThemeId) => void;
 }
 
-export default function Header({ mode, onModeChange, state }: HeaderProps) {
+export default function Header({ mode, onModeChange, state, theme, onThemeChange }: HeaderProps) {
   // Determine text status based on the current voice/websocket connection state
   const getStatusLabel = () => {
     switch (state) {
@@ -38,16 +41,17 @@ export default function Header({ mode, onModeChange, state }: HeaderProps) {
   };
 
   const status = getStatusLabel();
+  const activeTheme = THEMES[theme];
 
   return (
     <header className="flex flex-col sm:flex-row items-center justify-between w-full max-w-5xl mx-auto py-5 px-6 rounded-3xl border border-white/5 bg-white/[0.02] backdrop-blur-md shadow-lg select-none gap-4">
       {/* Title & Brand */}
       <div className="flex flex-col text-center sm:text-left">
         <div className="flex items-center justify-center sm:justify-start gap-2.5">
-          <h1 className="text-2xl font-bold font-sans tracking-tight bg-gradient-to-r from-white via-rose-100 to-pink-300 bg-clip-text text-transparent">
+          <h1 className="text-2xl font-bold font-sans tracking-tight bg-gradient-to-r from-white via-rose-100 to-pink-200 bg-clip-text text-transparent">
             Shibani Roy
           </h1>
-          <span className="flex items-center gap-1 px-2 py-0.5 rounded border border-rose-500/10 bg-rose-500/5 font-mono text-[9px] text-rose-300 uppercase tracking-widest">
+          <span className={`flex items-center gap-1 px-2 py-0.5 rounded border ${activeTheme.badgeClass} font-mono text-[9px] uppercase tracking-widest`}>
             AI Companion
           </span>
         </div>
@@ -57,7 +61,24 @@ export default function Header({ mode, onModeChange, state }: HeaderProps) {
       </div>
 
       {/* Dynamic Status Display & Mode Toggle */}
-      <div className="flex flex-col sm:flex-row items-center gap-4 w-full sm:w-auto">
+      <div className="flex flex-col sm:flex-row items-center gap-3 w-full sm:w-auto">
+        {/* Theme Select Dropdown */}
+        <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full border border-white/5 bg-white/5 shadow-sm text-xs text-gray-300 font-mono">
+          <Palette className="w-3.5 h-3.5 text-rose-400" />
+          <span className="text-gray-400 hidden sm:inline">Theme:</span>
+          <select
+            value={theme}
+            onChange={(e) => onThemeChange(e.target.value as ThemeId)}
+            className="bg-transparent border-none text-white text-xs font-semibold focus:outline-none focus:ring-0 cursor-pointer pr-1"
+          >
+            {Object.values(THEMES).map((t) => (
+              <option key={t.id} value={t.id} className="bg-[#0f0e15] text-white font-sans text-xs">
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
         {/* Connection status indicator */}
         <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full border border-white/5 bg-white/5 shadow-sm text-xs text-gray-300 font-mono">
           <span className="relative flex h-2 w-2">
@@ -96,7 +117,7 @@ export default function Header({ mode, onModeChange, state }: HeaderProps) {
           <motion.div
             layout
             transition={{ type: "spring", stiffness: 350, damping: 25 }}
-            className="absolute top-1.5 bottom-1.5 left-1.5 rounded-full bg-gradient-to-r from-rose-500 to-pink-500 shadow-md -z-0"
+            className={`absolute top-1.5 bottom-1.5 left-1.5 rounded-full bg-gradient-to-r ${activeTheme.accentGradient} shadow-md -z-0`}
             style={{
               width: mode === "voice" ? "106px" : "103px",
               x: mode === "voice" ? 0 : "106px",

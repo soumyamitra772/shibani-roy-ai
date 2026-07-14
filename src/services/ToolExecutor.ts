@@ -5,6 +5,7 @@
 
 import { ToolCallPayload, Track } from "../types";
 import { MusicControlCenter } from "./MusicControlCenter";
+import { getOrCreateUserId } from "../utils/userId";
 
 export interface ToolExecutionResult {
   success: boolean;
@@ -372,6 +373,106 @@ export class ToolExecutor {
           } catch (err: any) {
             throw new Error(`Failed to retrieve current time: ${err.message}`);
           }
+        }
+
+        case "rememberFact": {
+          const { fact, category } = args;
+          const userId = getOrCreateUserId();
+          if (!fact || !category) {
+            throw new Error("Missing 'fact' or 'category' parameters for rememberFact.");
+          }
+          const response = await fetch("/api/memories/remember", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ userId, fact, category })
+          });
+          if (!response.ok) {
+            throw new Error("Failed to save memory to database.");
+          }
+          const data = await response.json();
+          return {
+            success: true,
+            message: `Thoughtfully remembered fact: "${fact}" in category "${category}".`,
+            output: data
+          };
+        }
+
+        case "recallFacts": {
+          const userId = getOrCreateUserId();
+          const response = await fetch(`/api/memories/recall?userId=${encodeURIComponent(userId)}`);
+          if (!response.ok) {
+            throw new Error("Failed to retrieve memories from database.");
+          }
+          const data = await response.json();
+          const memoriesList = data.memories || [];
+          const summary = memoriesList.map((m: any) => `* [${m.category}] ${m.fact}`).join("\n");
+          return {
+            success: true,
+            message: memoriesList.length > 0 
+              ? `Recalled ${memoriesList.length} facts from past sessions:\n${summary}`
+              : "No memories recorded yet.",
+            output: data
+          };
+        }
+
+        case "recommendSongByMood": {
+          const { mood, note } = args;
+          if (!mood) {
+            throw new Error("Missing 'mood' parameter for recommendSongByMood.");
+          }
+
+          const moodNormalized = mood.toLowerCase().trim();
+          let songs: { title: string; artist: string; reason: string }[] = [];
+
+          if (moodNormalized.includes("sad") || moodNormalized.includes("broken") || moodNormalized.includes("depress") || moodNormalized.includes("hurt")) {
+            songs = [
+              { title: "Tum Hi Ho", artist: "Arijit Singh", reason: "The ultimate modern Hindi heartbreak/love anthem, deeply soothing and emotional." },
+              { title: "Let Me Down Slowly", artist: "Alec Benjamin", reason: "An elegant, hauntingly beautiful song with a comforting vocal tone." },
+              { title: "Channa Mereya", artist: "Arijit Singh", reason: "A soulful, acoustic masterpiece about bittersweet, loving goodbyes." }
+            ];
+          } else if (moodNormalized.includes("happy") || moodNormalized.includes("excit") || moodNormalized.includes("cheerful") || moodNormalized.includes("joy") || moodNormalized.includes("great") || moodNormalized.includes("good")) {
+            songs = [
+              { title: "Gimme! Gimme! Gimme!", artist: "ABBA", reason: "An absolute retro disco classic that instantly boosts energy and vibe!" },
+              { title: "Zinda", artist: "Amit Trivedi (Lootera)", reason: "An uplifting, anthemic track filled with life, passion, and hopeful beats." },
+              { title: "Dynamite", artist: "BTS", reason: "A super bubbly, bright, disco-pop track that is impossible not to dance to." }
+            ];
+          } else if (moodNormalized.includes("energetic") || moodNormalized.includes("upbeat") || moodNormalized.includes("workout") || moodNormalized.includes("hype") || moodNormalized.includes("dance")) {
+            songs = [
+              { title: "Believer", artist: "Imagine Dragons", reason: "Powerful percussion and a fierce rhythm to supercharge your motivation." },
+              { title: "Kar Har Maidaan Fateh", artist: "Sukhwinder Singh", reason: "An incredibly powerful, cinematic Indian anthem about conquering struggles." },
+              { title: "Eye of the Tiger", artist: "Survivor", reason: "The ultimate classic rock hype anthem to get you focused and pumped up." }
+            ];
+          } else if (moodNormalized.includes("stressed") || moodNormalized.includes("anxious") || moodNormalized.includes("calm") || moodNormalized.includes("relax") || moodNormalized.includes("chill") || moodNormalized.includes("sleep") || moodNormalized.includes("vent") || moodNormalized.includes("tired")) {
+            songs = [
+              { title: "Weightless", artist: "Marconi Union", reason: "Scientifically designed to slow heart rates, reduce blood pressure, and calm stress." },
+              { title: "Kun Faya Kun", artist: "A.R. Rahman", reason: "A mesmerizing, spiritual Sufi masterpiece that brings deep inner peace." },
+              { title: "River Flows in You", artist: "Yiruma", reason: "A gorgeous, gentle, flowing piano instrumental that washes away anxiety." }
+            ];
+          } else if (moodNormalized.includes("romantic") || moodNormalized.includes("love") || moodNormalized.includes("sweet") || moodNormalized.includes("cuddl") || moodNormalized.includes("date")) {
+            songs = [
+              { title: "Kesariya", artist: "Arijit Singh", reason: "A warm, sun-kissed romantic melody that wraps you like a hug." },
+              { title: "Perfect", artist: "Ed Sheeran", reason: "A dreamy, acoustic slow-dance ballad celebrating pure, sweet love." },
+              { title: "Zara Zara", artist: "Bombay Jayashri", reason: "A sensual, breathtaking classic with gorgeous, lingering romantic atmosphere." }
+            ];
+          } else {
+            songs = [
+              { title: "Perfect", artist: "Ed Sheeran", reason: "A universally loved, warm, and gentle acoustic song." },
+              { title: "Kun Faya Kun", artist: "A.R. Rahman", reason: "A deeply peaceful track to bring tranquility and clear the mind." },
+              { title: "Dynamite", artist: "BTS", reason: "A bright, high-energy pop track to instantly bring a smile!" }
+            ];
+          }
+
+          const responseText = songs.map((s, idx) => `${idx + 1}. "${s.title}" by ${s.artist} — ${s.reason}`).join("\n");
+
+          return {
+            success: true,
+            message: `Recommended 3 beautiful songs for the user's ${mood} vibe:\n${responseText}`,
+            output: {
+              mood,
+              note: note || "Custom recommendations tailored for your current state.",
+              songs
+            }
+          };
         }
 
         default:
