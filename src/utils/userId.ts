@@ -1,8 +1,23 @@
+let currentAuthUserId: string | null = null;
+let currentAuthToken: string | null = null;
+
+export function setAuthenticatedUser(userId: string | null, token: string | null) {
+  currentAuthUserId = userId;
+  currentAuthToken = token;
+}
+
+export function getAuthenticatedToken(): string | null {
+  return currentAuthToken;
+}
+
 /**
  * Utility to retrieve or generate a persistent anonymous user identifier.
  * Stored in localStorage so it persists across sessions.
  */
 export function getOrCreateUserId(): string {
+  if (currentAuthUserId) {
+    return currentAuthUserId;
+  }
   if (typeof window === "undefined" || !window.localStorage) {
     return "anonymous-user";
   }

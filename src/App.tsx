@@ -13,8 +13,9 @@ import { useVoiceConnection } from "./hooks/useVoiceConnection";
 import { Message, InteractionMode } from "./types";
 import { ToolExecutor } from "./services/ToolExecutor";
 import { MusicPlayer } from "./components/MusicPlayer";
-import { getOrCreateUserId } from "./utils/userId";
+import { getOrCreateUserId, setAuthenticatedUser } from "./utils/userId";
 import { ThemeId, THEMES } from "./utils/themes";
+import LoginScreen from "./components/LoginScreen";
 
 export default function App() {
   const [theme, setTheme] = useState<ThemeId>(() => {
@@ -26,6 +27,10 @@ export default function App() {
   const [chatLoading, setChatLoading] = useState(false);
   const [notification, setNotification] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
 
+  // Supabase Auth integration states via secure backend proxy
+  const [session, setSession] = useState<any>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
   // States for Shibani image generation
   const [latestVoiceImage, setLatestVoiceImage] = useState<{ url: string; prompt: string } | null>(null);
   const [isVoiceGeneratingImage, setIsVoiceGeneratingImage] = useState(false);
@@ -35,6 +40,128 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem("shibani-theme", theme);
   }, [theme]);
+
+  // Auth Initialization and State Listeners
+  useEffect(() => {
+    async function initAuth() {
+      try {
+        // 1. Check if we have hash parameters from a Magic Link redirect
+        const hash = window.location.hash;
+        if (hash && hash.includes("access_token=")) {
+          const params = new URLSearchParams(hash.substring(1)); // strip '#'
+          const accessToken = params.get("access_token");
+          
+          if (accessToken) {
+            // Clean the URL hash to keep UI clean
+            window.history.replaceState(null, "", window.location.pathname + window.location.search);
+
+            // Verify session with server
+            const verified = await verifySessionWithServer(accessToken);
+            if (verified) {
+              setAuthLoading(false);
+              return;
+            }
+          }
+        }
+
+        // 2. Check if we have an existing session in localStorage
+        const storedSessionStr = localStorage.getItem("shibani_session");
+        if (storedSessionStr) {
+          try {
+            const storedSession = JSON.parse(storedSessionStr);
+            if (storedSession && storedSession.access_token) {
+              const verified = await verifySessionWithServer(storedSession.access_token);
+              if (verified) {
+                setAuthLoading(false);
+                return;
+              }
+            }
+          } catch (e) {
+            console.error("Failed to parse stored session:", e);
+          }
+        }
+
+        // Default: No session
+        setSession(null);
+        setAuthenticatedUser(null, null);
+      } catch (err) {
+        console.error("Auth initialization failed:", err);
+      } finally {
+        setAuthLoading(false);
+      }
+    }
+
+    async function verifySessionWithServer(accessToken: string): Promise<boolean> {
+      try {
+        const response = await fetch("/api/auth/session", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ access_token: accessToken })
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setSession(data);
+          setAuthenticatedUser(data.user.id, data.access_token);
+          // Store session locally
+          localStorage.setItem("shibani_session", JSON.stringify(data));
+          // Perform migration if needed
+          await handleMigration(data.user.id);
+          return true;
+        } else {
+          // Token is expired or invalid, clear any stored session
+          localStorage.removeItem("shibani_session");
+          return false;
+        }
+      } catch (err) {
+        console.error("Failed to verify session with server:", err);
+        return false;
+      }
+    }
+
+    initAuth();
+  }, []);
+
+  const handleMigration = async (newUserId: string) => {
+    const oldAnonId = localStorage.getItem("shibani_user_id");
+    const migrationDoneKey = `shibani_migrated_${newUserId}`;
+
+    if (oldAnonId && !localStorage.getItem(migrationDoneKey)) {
+      try {
+        const res = await fetch("/api/auth/migrate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            anonymousId: oldAnonId,
+            authenticatedId: newUserId
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.success) {
+            console.log(`[Migration] Successfully migrated ${data.count} memories from ${oldAnonId} to ${newUserId}`);
+            localStorage.setItem(migrationDoneKey, "true");
+            localStorage.removeItem("shibani_user_id");
+            triggerNotification(
+              data.count > 0 
+                ? `Welcome back! Successfully migrated your ${data.count} saved memories.` 
+                : "Welcome! Your private profile is ready.", 
+              "success"
+            );
+          }
+        }
+      } catch (err) {
+        console.error("Error executing memory migration:", err);
+      }
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem("shibani_session");
+    setSession(null);
+    setAuthenticatedUser(null, null);
+    triggerNotification("Signed out successfully.", "info");
+  };
 
   // Trigger a self-fading overlay notification for tool executions
   const triggerNotification = (message: string, type: "success" | "error" | "info" = "success") => {
@@ -167,9 +294,13 @@ export default function App() {
         continueLoop = false; // default to stop unless we get a functionCall
 
         // Dispatch REST call to our Express secure Gemini proxy with streaming support
+        const token = session?.access_token || "";
         const response = await fetch("/api/chat", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            ...(token ? { "Authorization": `Bearer ${token}` } : {})
+          },
           body: JSON.stringify({
             userId: getOrCreateUserId(),
             messages: currentMessages.map(m => ({
@@ -396,6 +527,27 @@ export default function App() {
     setMode(newMode);
   };
 
+  if (authLoading) {
+    return (
+      <div className={`relative min-h-screen ${THEMES[theme].bgClass} text-white flex flex-col items-center justify-center font-sans overflow-hidden transition-colors duration-500`}>
+        {/* Glowing background orbs */}
+        <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none -z-20">
+          {THEMES[theme].orbs.map((orbClass, index) => (
+            <div
+              key={index}
+              className={`absolute rounded-full blur-[150px] animate-pulse ${orbClass}`}
+              style={{ animationDuration: index === 0 ? "12s" : index === 1 ? "15s" : "20s" }}
+            />
+          ))}
+        </div>
+        <div className="text-center space-y-4">
+          <div className="w-10 h-10 border-4 border-rose-500/30 border-t-rose-500 rounded-full animate-spin mx-auto" />
+          <p className="text-xs font-mono tracking-widest uppercase text-gray-400">Loading Shibani Secure Workspace...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className={`relative min-h-screen ${THEMES[theme].bgClass} text-white flex flex-col font-sans overflow-x-hidden transition-colors duration-500`}>
       
@@ -411,142 +563,156 @@ export default function App() {
       </div>
 
       {/* Main Container */}
-      <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-6 flex flex-col gap-6">
+      <main className="flex-1 max-w-5xl w-full mx-auto px-4 py-6 flex flex-col gap-6 justify-center">
         
         {/* Header Block */}
-        <Header mode={mode} onModeChange={handleModeChange} state={state} theme={theme} onThemeChange={setTheme} />
+        <Header 
+          mode={mode} 
+          onModeChange={handleModeChange} 
+          state={state} 
+          theme={theme} 
+          onThemeChange={setTheme} 
+          session={session} 
+          onLogout={handleLogout} 
+        />
 
-        {/* Dynamic sliding panel layout */}
-        <div className="flex-1 w-full max-w-4xl mx-auto flex flex-col justify-center min-h-[500px]">
-          <AnimatePresence mode="wait">
-            {mode === "voice" ? (
-              <motion.div
-                key="voice"
-                initial={{ opacity: 0, y: 15 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -15 }}
-                transition={{ duration: 0.3 }}
-                className={`w-full ${latestVoiceImage ? "max-w-4xl" : "max-w-xl"} mx-auto grid grid-cols-1 md:grid-cols-12 gap-6 items-center`}
-              >
-                <div className={`${latestVoiceImage ? "md:col-span-6" : "md:col-span-12"} w-full transition-all duration-500`}>
-                  <VoiceVisualizer
-                    state={state}
-                    volumesRef={volumesRef}
-                    isMuted={isMuted}
-                    onToggleMute={toggleMute}
-                    onConnect={connect}
-                    onDisconnect={disconnect}
-                    theme={theme}
-                    isGeneratingImage={isVoiceGeneratingImage}
-                  />
-                </div>
-
-                {latestVoiceImage && (
+        {!session ? (
+          <LoginScreen theme={theme} />
+        ) : (
+          <>
+            {/* Dynamic sliding panel layout */}
+            <div className="flex-1 w-full max-w-4xl mx-auto flex flex-col justify-center min-h-[500px]">
+              <AnimatePresence mode="wait">
+                {mode === "voice" ? (
                   <motion.div
-                    initial={{ opacity: 0, scale: 0.9, x: 20 }}
-                    animate={{ opacity: 1, scale: 1, x: 0 }}
-                    exit={{ opacity: 0, scale: 0.9, x: 20 }}
-                    className="md:col-span-6 w-full"
+                    key="voice"
+                    initial={{ opacity: 0, y: 15 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -15 }}
+                    transition={{ duration: 0.3 }}
+                    className={`w-full ${latestVoiceImage ? "max-w-4xl" : "max-w-xl"} mx-auto grid grid-cols-1 md:grid-cols-12 gap-6 items-center`}
                   >
-                    {/* Beautiful generated image card */}
-                    <div className={`relative flex flex-col p-6 rounded-3xl border ${THEMES[theme].borderColor} ${THEMES[theme].cardBg} backdrop-blur-xl shadow-2xl h-[480px] justify-between`}>
-                      <div className="flex justify-between items-center mb-3">
-                        <span className="text-xs tracking-wider font-mono uppercase text-rose-300">Shibani Shared a Photograph</span>
-                        <button
-                          onClick={() => setLatestVoiceImage(null)}
-                          className="p-1 rounded-full hover:bg-white/10 text-gray-400 hover:text-white transition-colors cursor-pointer"
-                          title="Close panel"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                      
-                      <div className="relative flex-1 rounded-2xl overflow-hidden border border-white/5 bg-black/40 flex items-center justify-center">
-                        <img
-                          src={latestVoiceImage.url}
-                          alt={latestVoiceImage.prompt}
-                          referrerPolicy="no-referrer"
-                          className="max-h-full max-w-full object-contain rounded-xl"
-                        />
-                      </div>
-                      
-                      <div className="mt-4 flex flex-col gap-2">
-                        <p className="text-xs text-gray-400 italic text-center line-clamp-2">
-                          "{latestVoiceImage.prompt}"
-                        </p>
-                        <button
-                          onClick={() => handleDownloadImage(latestVoiceImage.url, latestVoiceImage.prompt)}
-                          className="w-full py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-pink-500 text-white font-semibold hover:brightness-110 shadow-lg transition-all flex items-center justify-center gap-2 text-sm cursor-pointer"
-                        >
-                          <Download className="w-4 h-4" />
-                          <span>Download Image</span>
-                        </button>
-                      </div>
+                    <div className={`${latestVoiceImage ? "md:col-span-6" : "md:col-span-12"} w-full transition-all duration-500`}>
+                      <VoiceVisualizer
+                        state={state}
+                        volumesRef={volumesRef}
+                        isMuted={isMuted}
+                        onToggleMute={toggleMute}
+                        onConnect={connect}
+                        onDisconnect={disconnect}
+                        theme={theme}
+                        isGeneratingImage={isVoiceGeneratingImage}
+                      />
                     </div>
+
+                    {latestVoiceImage && (
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.9, x: 20 }}
+                        animate={{ opacity: 1, scale: 1, x: 0 }}
+                        exit={{ opacity: 0, scale: 0.9, x: 20 }}
+                        className="md:col-span-6 w-full"
+                      >
+                        {/* Beautiful generated image card */}
+                        <div className={`relative flex flex-col p-6 rounded-3xl border ${THEMES[theme].borderColor} ${THEMES[theme].cardBg} backdrop-blur-xl shadow-2xl h-[480px] justify-between`}>
+                          <div className="flex justify-between items-center mb-3">
+                            <span className="text-xs tracking-wider font-mono uppercase text-rose-300">Shibani Shared a Photograph</span>
+                            <button
+                              onClick={() => setLatestVoiceImage(null)}
+                              className="p-1 rounded-full hover:bg-white/10 text-gray-400 hover:text-white transition-colors cursor-pointer"
+                              title="Close panel"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+                          
+                          <div className="relative flex-1 rounded-2xl overflow-hidden border border-white/5 bg-black/40 flex items-center justify-center">
+                            <img
+                              src={latestVoiceImage.url}
+                              alt={latestVoiceImage.prompt}
+                              referrerPolicy="no-referrer"
+                              className="max-h-full max-w-full object-contain rounded-xl"
+                            />
+                          </div>
+                          
+                          <div className="mt-4 flex flex-col gap-2">
+                            <p className="text-xs text-gray-400 italic text-center line-clamp-2">
+                              "{latestVoiceImage.prompt}"
+                            </p>
+                            <button
+                              onClick={() => handleDownloadImage(latestVoiceImage.url, latestVoiceImage.prompt)}
+                              className="w-full py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-pink-500 text-white font-semibold hover:brightness-110 shadow-lg transition-all flex items-center justify-center gap-2 text-sm cursor-pointer"
+                            >
+                              <Download className="w-4 h-4" />
+                              <span>Download Image</span>
+                            </button>
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </motion.div>
+                ) : (
+                  <motion.div
+                    key="chat"
+                    initial={{ opacity: 0, y: 15 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -15 }}
+                    transition={{ duration: 0.3 }}
+                    className="w-full"
+                  >
+                    <ChatWindow
+                      messages={chatMessages}
+                      onSendMessage={handleSendChatMessage}
+                      isLoading={chatLoading}
+                      onClearHistory={handleClearHistory}
+                      onNewChat={handleNewChat}
+                      theme={theme}
+                      isGeneratingImage={isChatGeneratingImage}
+                    />
                   </motion.div>
                 )}
-              </motion.div>
-            ) : (
-              <motion.div
-                key="chat"
-                initial={{ opacity: 0, y: 15 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -15 }}
-                transition={{ duration: 0.3 }}
-                className="w-full"
-              >
-                <ChatWindow
-                  messages={chatMessages}
-                  onSendMessage={handleSendChatMessage}
-                  isLoading={chatLoading}
-                  onClearHistory={handleClearHistory}
-                  onNewChat={handleNewChat}
-                  theme={theme}
-                  isGeneratingImage={isChatGeneratingImage}
-                />
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
+              </AnimatePresence>
+            </div>
 
-        {/* Bento Trust & Capability Badges */}
-        <div id="bento-trust-row" className="grid grid-cols-1 sm:grid-cols-3 gap-4 w-full max-w-4xl mx-auto select-none mt-4">
-          <div className="flex items-start gap-3 p-4 rounded-2xl border border-white/5 bg-white/[0.01] hover:bg-white/[0.03] transition-all duration-300">
-            <div className="p-2.5 rounded-xl bg-pink-500/10 text-pink-400">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
-            <div>
-              <h4 className="text-sm font-semibold text-white">Full Privacy Safe</h4>
-              <p className="text-xs text-gray-400 mt-1 leading-relaxed">
-                Your voice streaming and API keys are proxy-processed securely. No local storage leaks.
-              </p>
-            </div>
-          </div>
+            {/* Bento Trust & Capability Badges */}
+            <div id="bento-trust-row" className="grid grid-cols-1 sm:grid-cols-3 gap-4 w-full max-w-4xl mx-auto select-none mt-4">
+              <div className="flex items-start gap-3 p-4 rounded-2xl border border-white/5 bg-white/[0.01] hover:bg-white/[0.03] transition-all duration-300">
+                <div className="p-2.5 rounded-xl bg-pink-500/10 text-pink-400">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-semibold text-white">Full Privacy Safe</h4>
+                  <p className="text-xs text-gray-400 mt-1 leading-relaxed">
+                    Your voice streaming and API keys are proxy-processed securely. No local storage leaks.
+                  </p>
+                </div>
+              </div>
 
-          <div className="flex items-start gap-3 p-4 rounded-2xl border border-white/5 bg-white/[0.01] hover:bg-white/[0.03] transition-all duration-300">
-            <div className="p-2.5 rounded-xl bg-rose-500/10 text-rose-400">
-              <Volume2 className="w-5 h-5" />
-            </div>
-            <div>
-              <h4 className="text-sm font-semibold text-white">Multilingual Voice</h4>
-              <p className="text-xs text-gray-400 mt-1 leading-relaxed">
-                Fluent conversational detection across English, Hindi, Hinglish, Bengali, and Banglish.
-              </p>
-            </div>
-          </div>
+              <div className="flex items-start gap-3 p-4 rounded-2xl border border-white/5 bg-white/[0.01] hover:bg-white/[0.03] transition-all duration-300">
+                <div className="p-2.5 rounded-xl bg-rose-500/10 text-rose-400">
+                  <Volume2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-semibold text-white">Multilingual Voice</h4>
+                  <p className="text-xs text-gray-400 mt-1 leading-relaxed">
+                    Fluent conversational detection across English, Hindi, Hinglish, Bengali, and Banglish.
+                  </p>
+                </div>
+              </div>
 
-          <div className="flex items-start gap-3 p-4 rounded-2xl border border-white/5 bg-white/[0.01] hover:bg-white/[0.03] transition-all duration-300">
-            <div className="p-2.5 rounded-xl bg-violet-500/10 text-violet-400">
-              <Sparkles className="w-5 h-5" />
+              <div className="flex items-start gap-3 p-4 rounded-2xl border border-white/5 bg-white/[0.01] hover:bg-white/[0.03] transition-all duration-300">
+                <div className="p-2.5 rounded-xl bg-violet-500/10 text-violet-400">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-semibold text-white">Function Calling</h4>
+                  <p className="text-xs text-gray-400 mt-1 leading-relaxed">
+                    Control your browser seamlessly with integrated tools to open YouTube, Google Search, and Maps.
+                  </p>
+                </div>
+              </div>
             </div>
-            <div>
-              <h4 className="text-sm font-semibold text-white">Function Calling</h4>
-              <p className="text-xs text-gray-400 mt-1 leading-relaxed">
-                Control your browser seamlessly with integrated tools to open YouTube, Google Search, and Maps.
-              </p>
-            </div>
-          </div>
-        </div>
+          </>
+        )}
       </main>
 
       {/* Floating Smart Media Player */}

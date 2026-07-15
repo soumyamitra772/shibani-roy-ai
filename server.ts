@@ -25,14 +25,22 @@ const ai = new GoogleGenAI({
 });
 
 // Initialize Supabase Client with graceful fallback for missing config
-const supabaseUrl = process.env.SUPABASE_URL || "";
-const supabaseKey = process.env.SUPABASE_KEY || "";
+const rawSupabaseUrl = process.env.SUPABASE_URL || "";
+const rawSupabaseKey = process.env.SUPABASE_KEY || "";
+
+let supabaseUrl = rawSupabaseUrl.trim();
+if (supabaseUrl.includes("/rest/v1")) {
+  supabaseUrl = supabaseUrl.split("/rest/v1")[0];
+}
+supabaseUrl = supabaseUrl.replace(/\/+$/, "");
+
+const supabaseKey = rawSupabaseKey.trim();
 
 let supabase: any = null;
 if (supabaseUrl && supabaseKey) {
   try {
     supabase = createClient(supabaseUrl, supabaseKey);
-    console.log("Supabase client initialized successfully.");
+    console.log("Supabase client initialized successfully with sanitized URL:", supabaseUrl);
   } catch (err) {
     console.error("Error initializing Supabase client:", err);
   }
@@ -710,13 +718,35 @@ function optimizeContents(contents: any[]): any[] {
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
-  const PORT = process.env.PORT || 3000;
+  const PORT = 3000;
 
   app.use(express.json());
 
   // REST API Route for standard Chat Mode with streaming support
   app.post("/api/chat", async (req, res) => {
-    const { messages, userId } = req.body;
+    // Auth protection
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null;
+    let verifiedUserId = req.body.userId;
+
+    if (supabase) {
+      if (!token) {
+        return res.status(401).json({ error: "Unauthorized: Missing authentication token." });
+      }
+      try {
+        const { data: { user }, error } = await supabase.auth.getUser(token);
+        if (error || !user) {
+          return res.status(401).json({ error: "Unauthorized: Invalid or expired session." });
+        }
+        verifiedUserId = user.id;
+      } catch (err: any) {
+        return res.status(401).json({ error: `Unauthorized: ${err.message}` });
+      }
+    }
+
+    const { messages } = req.body;
+    const userId = verifiedUserId;
+
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "Invalid messages array" });
     }
@@ -907,6 +937,116 @@ async function startServer() {
     }
   });
 
+  // REST API Route to send a passwordless OTP/magic link
+  app.post("/api/auth/otp", async (req, res) => {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ error: "Missing email parameter." });
+    }
+    if (!supabase) {
+      return res.status(500).json({ error: "Authentication system is currently unavailable (Supabase not configured)." });
+    }
+    try {
+      const protocol = req.headers["x-forwarded-proto"] ? "https" : "http";
+      const host = req.headers.host || "localhost:3000";
+      const fallbackOrigin = `${protocol}://${host}`;
+      const origin = req.headers.origin || fallbackOrigin;
+
+      const { error } = await supabase.auth.signInWithOtp({
+        email: email.trim(),
+        options: {
+          emailRedirectTo: origin,
+        },
+      });
+      if (error) {
+        return res.status(400).json({ error: error.message });
+      }
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "An error occurred while sending the magic link." });
+    }
+  });
+
+  // REST API Route to verify access token and return verified user profile
+  app.post("/api/auth/session", async (req, res) => {
+    const { access_token } = req.body;
+    if (!access_token) {
+      return res.status(400).json({ error: "Missing access_token parameter." });
+    }
+    if (!supabase) {
+      return res.status(500).json({ error: "Authentication system is currently unavailable (Supabase not configured)." });
+    }
+    try {
+      const { data: { user }, error } = await supabase.auth.getUser(access_token);
+      if (error || !user) {
+        return res.status(401).json({ error: "Invalid or expired session token." });
+      }
+      res.json({
+        user: {
+          id: user.id,
+          email: user.email,
+        },
+        access_token,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "An error occurred while verifying the session." });
+    }
+  });
+
+  // REST API Route to migrate memories from an anonymous ID to an authenticated ID
+  app.post("/api/auth/migrate", async (req, res) => {
+    const { anonymousId, authenticatedId } = req.body;
+    if (!anonymousId || !authenticatedId) {
+      return res.status(400).json({ error: "Missing anonymousId or authenticatedId parameters." });
+    }
+
+    if (!supabase) {
+      return res.json({ success: true, migrated: false, count: 0, message: "Supabase not configured, skipping migration." });
+    }
+
+    try {
+      // Verify if authenticated user already has memories to determine if this is their first login
+      const { count, error: countErr } = await supabase
+        .from("memories")
+        .select("*", { count: "exact", head: true })
+        .eq("user_id", authenticatedId);
+
+      if (countErr) {
+        console.error("[Migration] Error checking authenticated user memories:", countErr);
+        return res.status(500).json({ error: "Failed to verify authenticated user status." });
+      }
+
+      if (count && count > 0) {
+        console.log(`[Migration] User ${authenticatedId} already has memories. Skipping one-time migration.`);
+        return res.json({ success: true, migrated: false, count: 0 });
+      }
+
+      // Execute migration reassignment update
+      const { data, error } = await supabase
+        .from("memories")
+        .update({ user_id: authenticatedId })
+        .eq("user_id", anonymousId)
+        .select();
+
+      if (error) {
+        console.error("[Migration] Error updating memories for migration:", error);
+        return res.status(500).json({ error: "Failed to perform database update for migration." });
+      }
+
+      const migratedCount = data ? data.length : 0;
+      console.log(`Migrated ${migratedCount} memories from anonymous ID ${anonymousId} to user ${authenticatedId}`);
+
+      return res.json({
+        success: true,
+        migrated: migratedCount > 0,
+        count: migratedCount
+      });
+    } catch (err: any) {
+      console.error("[Migration] Unexpected error:", err);
+      return res.status(500).json({ error: err.message || "Failed to execute migration." });
+    }
+  });
+
   // REST API Route for health checking
   app.get("/api/health", (req, res) => {
     res.json({ status: "ok", mode: process.env.NODE_ENV || "development" });
@@ -1009,21 +1149,50 @@ async function startServer() {
 
   // REST API Route to save a long-term memory fact
   app.post("/api/memories/remember", async (req, res) => {
-    const { userId, fact, category } = req.body;
-    if (!userId || !fact) {
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null;
+    let resolvedUserId = req.body.userId;
+
+    if (supabase && token) {
+      try {
+        const { data: { user }, error } = await supabase.auth.getUser(token);
+        if (!error && user) {
+          resolvedUserId = user.id;
+        }
+      } catch (err) {
+        console.error("Error verifying token in remember:", err);
+      }
+    }
+
+    const { fact, category } = req.body;
+    if (!resolvedUserId || !fact) {
       return res.status(400).json({ error: "Missing required fields userId or fact." });
     }
-    const success = await saveFactToDb(String(userId), String(fact), String(category || "general"));
+    const success = await saveFactToDb(String(resolvedUserId), String(fact), String(category || "general"));
     res.json({ success, fact, category });
   });
 
   // REST API Route to retrieve long-term memories for a user
   app.get("/api/memories/recall", async (req, res) => {
-    const { userId } = req.query;
-    if (!userId) {
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null;
+    let resolvedUserId = req.query.userId;
+
+    if (supabase && token) {
+      try {
+        const { data: { user }, error } = await supabase.auth.getUser(token);
+        if (!error && user) {
+          resolvedUserId = user.id;
+        }
+      } catch (err) {
+        console.error("Error verifying token in recall:", err);
+      }
+    }
+
+    if (!resolvedUserId) {
       return res.status(400).json({ error: "Missing required 'userId' query parameter." });
     }
-    const memories = await recallFactsFromDb(String(userId));
+    const memories = await recallFactsFromDb(String(resolvedUserId));
     res.json({ memories });
   });
 
@@ -1060,9 +1229,25 @@ async function startServer() {
     let session: any = null;
 
     try {
-      // Parse query params to extract userId
+      // Parse query params to extract userId and token
       const urlObj = new URL(req.url || "", `http://${req.headers?.host || "localhost"}`);
-      const userId = urlObj.searchParams.get("userId") || "anonymous-user";
+      let userId = urlObj.searchParams.get("userId") || "anonymous-user";
+      const token = urlObj.searchParams.get("token");
+
+      if (supabase) {
+        if (!token) {
+          clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Missing authentication token." }));
+          clientWs.close();
+          return;
+        }
+        const { data: { user }, error } = await supabase.auth.getUser(token);
+        if (error || !user) {
+          clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Invalid or expired session." }));
+          clientWs.close();
+          return;
+        }
+        userId = user.id;
+      }
       
       const memories = await recallFactsFromDb(userId);
       const systemInstruction = getSystemInstruction(memories);

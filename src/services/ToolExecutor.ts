@@ -5,7 +5,7 @@
 
 import { ToolCallPayload, Track } from "../types";
 import { MusicControlCenter } from "./MusicControlCenter";
-import { getOrCreateUserId } from "../utils/userId";
+import { getOrCreateUserId, getAuthenticatedToken } from "../utils/userId";
 
 export interface ToolExecutionResult {
   success: boolean;
@@ -408,9 +408,13 @@ export class ToolExecutor {
           if (!fact || !category) {
             throw new Error("Missing 'fact' or 'category' parameters for rememberFact.");
           }
+          const token = getAuthenticatedToken();
           const response = await fetch("/api/memories/remember", {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { 
+              "Content-Type": "application/json",
+              ...(token ? { "Authorization": `Bearer ${token}` } : {})
+            },
             body: JSON.stringify({ userId, fact, category })
           });
           if (!response.ok) {
@@ -426,7 +430,12 @@ export class ToolExecutor {
 
         case "recallFacts": {
           const userId = getOrCreateUserId();
-          const response = await fetch(`/api/memories/recall?userId=${encodeURIComponent(userId)}`);
+          const token = getAuthenticatedToken();
+          const response = await fetch(`/api/memories/recall?userId=${encodeURIComponent(userId)}`, {
+            headers: {
+              ...(token ? { "Authorization": `Bearer ${token}` } : {})
+            }
+          });
           if (!response.ok) {
             throw new Error("Failed to retrieve memories from database.");
           }

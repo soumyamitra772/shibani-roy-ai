@@ -5,7 +5,7 @@
 
 import React from "react";
 import { motion } from "motion/react";
-import { Mic, MessageSquare, Radio, Github, Palette } from "lucide-react";
+import { Mic, MessageSquare, Radio, Github, Palette, LogOut } from "lucide-react";
 import { InteractionMode, AssistantState } from "../types";
 import { ThemeId, THEMES } from "../utils/themes";
 
@@ -15,9 +15,11 @@ interface HeaderProps {
   state: AssistantState;
   theme: ThemeId;
   onThemeChange: (theme: ThemeId) => void;
+  session: any;
+  onLogout: () => void;
 }
 
-export default function Header({ mode, onModeChange, state, theme, onThemeChange }: HeaderProps) {
+export default function Header({ mode, onModeChange, state, theme, onThemeChange, session, onLogout }: HeaderProps) {
   // Determine text status based on the current voice/websocket connection state
   const getStatusLabel = () => {
     switch (state) {
@@ -82,14 +84,26 @@ export default function Header({ mode, onModeChange, state, theme, onThemeChange
         {/* Connection status indicator */}
         <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-full border border-white/5 bg-white/5 shadow-sm text-xs text-gray-300 font-mono">
           <span className="relative flex h-2 w-2">
-            {status.ping && (
+            {status && status.ping && (
               <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${status.color} opacity-75`} />
             )}
-            <span className={`relative inline-flex rounded-full h-2 w-2 ${status.color}`} />
+            <span className={`relative inline-flex rounded-full h-2 w-2 ${status?.color || "bg-gray-500"}`} />
           </span>
           <span className="text-gray-400">Voice Link:</span>
-          <span className="font-medium text-white">{status.label}</span>
+          <span className="font-medium text-white">{status?.label || "Offline"}</span>
         </div>
+
+        {/* Logout Button */}
+        {session && (
+          <button
+            onClick={onLogout}
+            className="flex items-center gap-2 px-3.5 py-1.5 rounded-full border border-red-500/20 bg-red-500/5 hover:bg-red-500/15 shadow-sm text-xs text-red-300 font-mono transition-all duration-300 cursor-pointer hover:text-white"
+            title="Sign out of your account"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span className="font-semibold">Log Out</span>
+          </button>
+        )}
 
         {/* Slidable Switch for Interaction Modes */}
         <div className="relative flex items-center bg-black/50 border border-white/10 rounded-full p-1.5 max-w-xs shadow-inner">
