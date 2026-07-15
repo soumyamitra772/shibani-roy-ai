@@ -5,7 +5,7 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Send, Trash2, RefreshCw, Copy, Check, MessageSquare, Sparkles } from "lucide-react";
+import { Send, Trash2, RefreshCw, Copy, Check, MessageSquare, Sparkles, Download, Camera } from "lucide-react";
 import { Message } from "../types";
 import Markdown from "./Markdown";
 import { ThemeId, THEMES } from "../utils/themes";
@@ -17,6 +17,7 @@ interface ChatWindowProps {
   onClearHistory: () => void;
   onNewChat: () => void;
   theme: ThemeId;
+  isGeneratingImage?: boolean;
 }
 
 const CONVERSATION_STARTERS = [
@@ -41,11 +42,37 @@ export default function ChatWindow({
   onClearHistory,
   onNewChat,
   theme,
+  isGeneratingImage = false,
 }: ChatWindowProps) {
   const [input, setInput] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [starters, setStarters] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Safe and native image downloader
+  const handleDownloadImage = async (imageUrl: string, description: string) => {
+    try {
+      const response = await fetch(imageUrl);
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      const timestamp = Math.floor(Date.now() / 1000).toString().slice(-6);
+      a.download = `shibani-${timestamp}.jpg`;
+      
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      
+      setTimeout(() => {
+        URL.revokeObjectURL(blobUrl);
+      }, 1000);
+    } catch (err) {
+      console.error("Error downloading image:", err);
+      window.open(imageUrl, "_blank");
+    }
+  };
 
   // Generate a random selection of 5 starters
   const rotateStarters = () => {
@@ -161,7 +188,30 @@ export default function ChatWindow({
 
                   {/* Message body */}
                   <div className="pr-6">
-                    <Markdown content={msg.content} />
+                    {msg.imageUrl ? (
+                      <div className="mb-1">
+                        <div className="relative rounded-xl overflow-hidden border border-white/10 bg-black/30 shadow-inner max-w-full">
+                          <img
+                            src={msg.imageUrl}
+                            alt={msg.imageDescription || "Shibani Roy"}
+                            referrerPolicy="no-referrer"
+                            className="w-full h-auto max-h-[300px] object-cover rounded-xl"
+                          />
+                        </div>
+                        <div className="mt-2 flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => handleDownloadImage(msg.imageUrl!, msg.imageDescription || "shibani")}
+                            className="px-2.5 py-1.5 rounded-lg border border-rose-500/20 bg-rose-500/10 hover:bg-rose-500 text-rose-300 hover:text-white transition-all duration-300 flex items-center gap-1.5 text-[11px] font-semibold cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            <span>Download Image</span>
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <Markdown content={msg.content} />
+                    )}
                   </div>
 
                   {/* Timestamp & Copy triggers */}
@@ -184,6 +234,18 @@ export default function ChatWindow({
             );
           });
         })()}
+
+        {/* Dynamic Image Generation Loading State */}
+        {isGeneratingImage && (
+          <div className="flex justify-start">
+            <div className="bg-gradient-to-br from-violet-950/40 to-fuchsia-950/20 border border-violet-500/10 rounded-2xl rounded-tl-none p-4 flex items-center space-x-1.5 select-none shadow-lg">
+              <span className="text-xs text-violet-300 font-mono mr-1.5 animate-pulse">Shibani is rendering a photo... 📸</span>
+              <span className="w-2 h-2 rounded-full bg-violet-400 animate-bounce" style={{ animationDelay: "0ms" }}></span>
+              <span className="w-2 h-2 rounded-full bg-violet-400 animate-bounce" style={{ animationDelay: "150ms" }}></span>
+              <span className="w-2 h-2 rounded-full bg-violet-400 animate-bounce" style={{ animationDelay: "300ms" }}></span>
+            </div>
+          </div>
+        )}
 
         {/* Dynamic Typing Indicator */}
         {isLoading && (

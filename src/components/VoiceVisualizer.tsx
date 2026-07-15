@@ -5,7 +5,7 @@
 
 import React, { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Mic, MicOff, PhoneOff, Radio, Sparkles } from "lucide-react";
+import { Mic, MicOff, PhoneOff, Radio, Sparkles, Camera } from "lucide-react";
 import { AssistantState } from "../types";
 import { ThemeId, THEMES } from "../utils/themes";
 
@@ -17,6 +17,7 @@ interface VoiceVisualizerProps {
   onConnect: () => void;
   onDisconnect: () => void;
   theme: ThemeId;
+  isGeneratingImage?: boolean;
 }
 
 export default function VoiceVisualizer({
@@ -27,6 +28,7 @@ export default function VoiceVisualizer({
   onConnect,
   onDisconnect,
   theme,
+  isGeneratingImage = false,
 }: VoiceVisualizerProps) {
   const [bars, setBars] = useState<number[]>(Array(24).fill(10));
 
@@ -72,6 +74,15 @@ export default function VoiceVisualizer({
 
   // Determine color theme based on current state
   const getStateColors = () => {
+    if (isGeneratingImage) {
+      return {
+        glow: "rgba(139, 92, 246, 0.6)",
+        ring: "border-purple-500/50 animate-pulse",
+        gradient: "from-purple-500/15 to-violet-500/15 animate-pulse",
+        text: "text-purple-400 font-semibold animate-pulse",
+        desc: "Capturing a picture... 📸"
+      };
+    }
     switch (state) {
       case "disconnected":
         return {
@@ -210,7 +221,14 @@ export default function VoiceVisualizer({
           )}
 
           <div className="z-10 flex flex-col items-center justify-center text-center">
-            {state === "disconnected" ? (
+            {isGeneratingImage ? (
+              <motion.div
+                animate={{ scale: [1, 1.15, 1], rotate: [0, 5, -5, 0] }}
+                transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+              >
+                <Camera className="w-12 h-12 text-purple-400 drop-shadow-[0_0_10px_rgba(168,85,247,0.5)]" />
+              </motion.div>
+            ) : state === "disconnected" ? (
               <PhoneOff className="w-12 h-12 text-gray-500 group-hover:text-rose-400 transition-colors duration-300" />
             ) : state === "thinking" ? (
               <Sparkles className="w-12 h-12 text-purple-400 animate-spin" />

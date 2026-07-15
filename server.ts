@@ -189,6 +189,14 @@ Mood & Tone Adaptation Guidelines (CRITICAL):
 Mood-Based Music Recommendations:
 - If the user expresses a mood or vibe, or if you feel a change in their mood, proactively and naturally offer to recommend songs that fit their state of mind (e.g. "Do you want me to play some soft tunes to help you relax?").
 - Use the 'recommendSongByMood' tool to retrieve tailored song recommendations. Once retrieved, introduce them warmly and let them know they can say "play X" or click to play any of them!
+
+Image Generation Guidelines (CRITICAL):
+- You have the 'generateImage' tool to generate consistent, beautiful, and photorealistic images of yourself (Shibani) on demand.
+- Shibani is a modern Indian girl with a highly photorealistic, charming, and stylish appearance, typically with warm features, expressive dark eyes, and elegant hair, living in Kolkata.
+- When the user asks "show me a picture of you", "send me a selfie", "what do you look like today", or "send me a photo of yourself", ALWAYS call the 'generateImage' tool with an appropriate description (e.g. "shibaniroy wearing a blue saree, smiling, natural lighting, photorealistic" or "shibaniroy enjoying coffee, casual look, selfie perspective, warm lighting").
+- Always use the fixed trigger word "shibaniroy" at the start of the description argument to ensure consistent face and character features! Combine it with details from the conversation context (e.g., if you are talking about saree, saree color, location, mood).
+- When calling 'generateImage' in voice mode, say a short conversational filler (e.g., "Let me find a good picture...", "Sending you a picture now!", "Here is a quick photo of me, hope you like it!"). The tool will generate the image, and it will appear on their screen.
+- Never refuse a photo request! Always call 'generateImage'.
 `;
 
 function getSystemInstruction(memoriesList: MemoryItem[] = []): string {
@@ -437,6 +445,17 @@ const FUNCTION_DECLARATIONS = [
         note: { type: Type.STRING, description: "A brief personalized context or note on why these are recommended." }
       },
       required: ["mood"]
+    }
+  },
+  {
+    name: "generateImage",
+    description: "Generates and returns a beautiful, high-quality, photorealistic photograph or image of Shibani Roy based on a description. Use this whenever the user asks for a photo, picture, selfie, or what you look like. Provide detailed descriptions of clothes, backgrounds, and vibes.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        description: { type: Type.STRING, description: "Details of Shibani's pose, outfit, location, lighting, and expressions (e.g., 'wearing a red saree, smiling, standing near Victoria Memorial at sunset, soft dramatic lighting')." }
+      },
+      required: ["description"]
     }
   }
 ];
@@ -691,7 +710,7 @@ function optimizeContents(contents: any[]): any[] {
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
-  const PORT = process.env.PORT || 3000;
+  const PORT = 3000;
 
   app.use(express.json());
 
@@ -918,6 +937,74 @@ async function startServer() {
     }
     const result = await searchWeb(String(query));
     res.json(result);
+  });
+
+  // REST API Route to generate consistent images of Shibani via Fal.ai
+  app.post("/api/tools/generate-image", async (req, res) => {
+    const { description } = req.body;
+    if (!description) {
+      return res.status(400).json({ error: "Missing required 'description' parameter." });
+    }
+
+    const apiKey = process.env.FAL_API_KEY;
+    const loraPath = process.env.FAL_LORA_PATH;
+
+    if (!apiKey) {
+      console.error("[ImageGen] Missing FAL_API_KEY env variable.");
+      return res.status(500).json({ 
+        success: false, 
+        error: "Fal.ai API key is not configured. Please supply FAL_API_KEY in secrets." 
+      });
+    }
+
+    const triggerWord = "shibaniroy";
+    // Combine trigger word with user's requested description
+    const cleanDesc = description.toLowerCase().includes(triggerWord) 
+      ? description 
+      : `${triggerWord}, ${description}`;
+
+    try {
+      console.log(`[ImageGen] Prompt: "${cleanDesc}", LoRA: "${loraPath || 'none'}"`);
+      const response = await fetch("https://fal.run/fal-ai/flux-lora", {
+        method: "POST",
+        headers: {
+          "Authorization": `Key ${apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          prompt: cleanDesc,
+          image_size: "square_hd",
+          loras: loraPath ? [
+            {
+              path: loraPath,
+              scale: 1.0
+            }
+          ] : []
+        })
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Fal.ai API error ${response.status}: ${errText}`);
+      }
+
+      const data: any = await response.json();
+      if (data.images && data.images.length > 0) {
+        return res.json({
+          success: true,
+          url: data.images[0].url,
+          prompt: cleanDesc
+        });
+      } else {
+        throw new Error("No images found in response from Fal.ai");
+      }
+    } catch (err: any) {
+      console.error("[ImageGen] Error calling Fal.ai:", err);
+      return res.status(500).json({
+        success: false,
+        error: err.message || "Failed to generate image"
+      });
+    }
   });
 
   // REST API Route to save a long-term memory fact

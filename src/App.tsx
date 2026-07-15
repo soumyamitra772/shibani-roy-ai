@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Mic, MessageSquare, Sparkles, Volume2, ShieldCheck, Heart, AlertCircle, Info } from "lucide-react";
+import { Mic, MessageSquare, Sparkles, Volume2, ShieldCheck, Heart, AlertCircle, Info, X, Download } from "lucide-react";
 import Header from "./components/Header";
 import VoiceVisualizer from "./components/VoiceVisualizer";
 import ChatWindow from "./components/ChatWindow";
@@ -26,6 +26,11 @@ export default function App() {
   const [chatLoading, setChatLoading] = useState(false);
   const [notification, setNotification] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
 
+  // States for Shibani image generation
+  const [latestVoiceImage, setLatestVoiceImage] = useState<{ url: string; prompt: string } | null>(null);
+  const [isVoiceGeneratingImage, setIsVoiceGeneratingImage] = useState(false);
+  const [isChatGeneratingImage, setIsChatGeneratingImage] = useState(false);
+
   // Sync theme changes to localStorage
   useEffect(() => {
     localStorage.setItem("shibani-theme", theme);
@@ -37,7 +42,34 @@ export default function App() {
     setTimeout(() => setNotification(null), 4000);
   };
 
-  // Wire up the custom voice engine
+  // Safe and native image downloader
+  const handleDownloadImage = async (imageUrl: string, description: string) => {
+    try {
+      const response = await fetch(imageUrl);
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      const timestamp = Math.floor(Date.now() / 1000).toString().slice(-6);
+      a.download = `shibani-${timestamp}.jpg`;
+      
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      
+      setTimeout(() => {
+        URL.revokeObjectURL(blobUrl);
+      }, 1000);
+      triggerNotification("Image download started!", "success");
+    } catch (err) {
+      console.error("Error downloading image:", err);
+      window.open(imageUrl, "_blank");
+      triggerNotification("Opening image in new tab to download", "info");
+    }
+  };
+
+  // Wire up the custom voice engine with expanded callbacks
   const {
     state,
     isMuted,
@@ -47,6 +79,37 @@ export default function App() {
     toggleMute,
     stopPlayback,
   } = useVoiceConnection({
+    onToolCallExecuting: (name, args) => {
+      if (name === "generateImage") {
+        setIsVoiceGeneratingImage(true);
+      }
+    },
+    onToolCallCompleted: (name, result) => {
+      if (name === "generateImage") {
+        setIsVoiceGeneratingImage(false);
+        if (result.success && result.output && result.output.url) {
+          const promptDesc = result.output.prompt || "Shibani Roy";
+          setLatestVoiceImage({
+            url: result.output.url,
+            prompt: promptDesc
+          });
+          
+          // Inject generated photo into the persistent chat history
+          const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+          setChatMessages((prev) => [
+            ...prev,
+            {
+              id: `image-${Math.random()}`,
+              role: "assistant",
+              content: "",
+              timestamp: now,
+              imageUrl: result.output.url,
+              imageDescription: promptDesc
+            }
+          ]);
+        }
+      }
+    },
     onToolCallExecuted: (logMessage) => {
       // Feed voice-mode tool logs into the chat history for seamless session integrity
       const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -58,7 +121,7 @@ export default function App() {
           content: logMessage,
           timestamp: now,
           isToolCall: true,
-          toolName: logMessage.includes("Google") ? "searchGoogle" : logMessage.includes("YouTube") ? "openYouTube" : logMessage.includes("Maps") ? "openMaps" : "Browser Link"
+          toolName: logMessage.includes("image") ? "generateImage" : logMessage.includes("Google") ? "searchGoogle" : logMessage.includes("YouTube") ? "openYouTube" : logMessage.includes("Maps") ? "openMaps" : "Browser Link"
         }
       ]);
       triggerNotification(logMessage, "success");
@@ -225,14 +288,36 @@ export default function App() {
           continueLoop = true;
 
           // Execute all function calls in parallel
+          // Execute all function calls in parallel
           const results = await Promise.all(
             functionCalls.map(async (call) => {
+              if (call.name === "generateImage") {
+                setIsChatGeneratingImage(true);
+              }
               const result = await ToolExecutor.execute(call);
+              if (call.name === "generateImage") {
+                setIsChatGeneratingImage(false);
+              }
               // Trigger a subtle in-app floating banner for tool executions
               triggerNotification(result.message, result.success ? "success" : "error");
               return result;
             })
           );
+
+          // If any of the function calls generated an image, create a message bubble for it
+          const imageMessages: Message[] = [];
+          results.forEach((r, idx) => {
+            if (functionCalls[idx].name === "generateImage" && r.success && r.output?.url) {
+              imageMessages.push({
+                id: `image-${Math.random()}`,
+                role: "assistant",
+                content: "",
+                timestamp: replyTime,
+                imageUrl: r.output.url,
+                imageDescription: r.output.prompt || functionCalls[idx].args.description
+              });
+            }
+          });
 
           // Append hidden system records of the function call & responses to the history
           const modelCallMsg: Message = {
@@ -272,8 +357,8 @@ export default function App() {
           };
 
           // Update local React state and local variable for next API turn
-          setChatMessages((prev) => [...prev, modelCallMsg, userRespMsg]);
-          currentMessages = [...currentMessages, modelCallMsg, userRespMsg];
+          setChatMessages((prev) => [...prev, ...imageMessages, modelCallMsg, userRespMsg]);
+          currentMessages = [...currentMessages, ...imageMessages, modelCallMsg, userRespMsg];
         }
       }
 
@@ -341,17 +426,65 @@ export default function App() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -15 }}
                 transition={{ duration: 0.3 }}
-                className="w-full max-w-xl mx-auto"
+                className={`w-full ${latestVoiceImage ? "max-w-4xl" : "max-w-xl"} mx-auto grid grid-cols-1 md:grid-cols-12 gap-6 items-center`}
               >
-                <VoiceVisualizer
-                  state={state}
-                  volumesRef={volumesRef}
-                  isMuted={isMuted}
-                  onToggleMute={toggleMute}
-                  onConnect={connect}
-                  onDisconnect={disconnect}
-                  theme={theme}
-                />
+                <div className={`${latestVoiceImage ? "md:col-span-6" : "md:col-span-12"} w-full transition-all duration-500`}>
+                  <VoiceVisualizer
+                    state={state}
+                    volumesRef={volumesRef}
+                    isMuted={isMuted}
+                    onToggleMute={toggleMute}
+                    onConnect={connect}
+                    onDisconnect={disconnect}
+                    theme={theme}
+                    isGeneratingImage={isVoiceGeneratingImage}
+                  />
+                </div>
+
+                {latestVoiceImage && (
+                  <motion.div
+                    initial={{ opacity: 0, scale: 0.9, x: 20 }}
+                    animate={{ opacity: 1, scale: 1, x: 0 }}
+                    exit={{ opacity: 0, scale: 0.9, x: 20 }}
+                    className="md:col-span-6 w-full"
+                  >
+                    {/* Beautiful generated image card */}
+                    <div className={`relative flex flex-col p-6 rounded-3xl border ${THEMES[theme].borderColor} ${THEMES[theme].cardBg} backdrop-blur-xl shadow-2xl h-[480px] justify-between`}>
+                      <div className="flex justify-between items-center mb-3">
+                        <span className="text-xs tracking-wider font-mono uppercase text-rose-300">Shibani Shared a Photograph</span>
+                        <button
+                          onClick={() => setLatestVoiceImage(null)}
+                          className="p-1 rounded-full hover:bg-white/10 text-gray-400 hover:text-white transition-colors cursor-pointer"
+                          title="Close panel"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                      
+                      <div className="relative flex-1 rounded-2xl overflow-hidden border border-white/5 bg-black/40 flex items-center justify-center">
+                        <img
+                          src={latestVoiceImage.url}
+                          alt={latestVoiceImage.prompt}
+                          referrerPolicy="no-referrer"
+                          className="max-h-full max-w-full object-contain rounded-xl"
+                        />
+                      </div>
+                      
+                      <div className="mt-4 flex flex-col gap-2">
+                        <p className="text-xs text-gray-400 italic text-center line-clamp-2">
+                          "{latestVoiceImage.prompt}"
+                        </p>
+                        <button
+                          onClick={() => handleDownloadImage(latestVoiceImage.url, latestVoiceImage.prompt)}
+                          className="w-full py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-pink-500 text-white font-semibold hover:brightness-110 shadow-lg transition-all flex items-center justify-center gap-2 text-sm cursor-pointer"
+                        >
+                          <Download className="w-4 h-4" />
+                          <span>Download Image</span>
+                        </button>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
               </motion.div>
             ) : (
               <motion.div
@@ -369,6 +502,7 @@ export default function App() {
                   onClearHistory={handleClearHistory}
                   onNewChat={handleNewChat}
                   theme={theme}
+                  isGeneratingImage={isChatGeneratingImage}
                 />
               </motion.div>
             )}

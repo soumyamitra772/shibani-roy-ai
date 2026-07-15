@@ -284,6 +284,33 @@ export class ToolExecutor {
           };
         }
 
+        case "generateImage": {
+          const description = args.description;
+          if (!description) {
+            throw new Error("Missing required 'description' parameter.");
+          }
+          const response = await fetch("/api/tools/generate-image", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ description }),
+          });
+          if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.error || `Failed to generate image: ${response.statusText}`);
+          }
+          const data = await response.json();
+          if (!data.success) {
+            throw new Error(data.error || "Image generation error");
+          }
+          return {
+            success: true,
+            message: `Successfully generated image of Shibani: ${description}`,
+            output: { success: true, url: data.url, prompt: data.prompt }
+          };
+        }
+
         case "shareContent": {
           const text = args.text;
           if (!text) {

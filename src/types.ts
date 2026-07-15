@@ -24,6 +24,8 @@ export interface Message {
   functionResponses?: any[];
   parts?: any[];
   isHidden?: boolean;
+  imageUrl?: string;
+  imageDescription?: string;
 }
 
 export type InteractionMode = "voice" | "chat";

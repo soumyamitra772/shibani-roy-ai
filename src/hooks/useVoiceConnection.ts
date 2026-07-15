@@ -12,11 +12,15 @@ import { getOrCreateUserId } from "../utils/userId";
 interface UseVoiceConnectionProps {
   onToolCallExecuted?: (message: string) => void;
   onAssistantSpokeText?: (text: string) => void;
+  onToolCallExecuting?: (name: string, args: any) => void;
+  onToolCallCompleted?: (name: string, result: any) => void;
 }
 
 export function useVoiceConnection({
   onToolCallExecuted,
   onAssistantSpokeText,
+  onToolCallExecuting,
+  onToolCallCompleted,
 }: UseVoiceConnectionProps = {}) {
   const [state, setState] = useState<AssistantState>("disconnected");
   const [isMuted, setIsMuted] = useState(false);
@@ -293,8 +297,19 @@ export function useVoiceConnection({
             case "toolCall":
               if (msg.toolCall) {
                 const call = msg.toolCall as ToolCallPayload;
+                
+                // Trigger executing callback
+                if (onToolCallExecuting) {
+                  onToolCallExecuting(call.name, call.args);
+                }
+
                 // Execute tool
                 const result = await ToolExecutor.execute(call);
+
+                // Trigger completed callback
+                if (onToolCallCompleted) {
+                  onToolCallCompleted(call.name, result);
+                }
                 
                 // Trigger visual callbacks if provided
                 if (onToolCallExecuted) {
