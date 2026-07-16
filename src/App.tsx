@@ -16,6 +16,7 @@ import { MusicPlayer } from "./components/MusicPlayer";
 import { getOrCreateUserId, setAuthenticatedUser } from "./utils/userId";
 import { ThemeId, THEMES } from "./utils/themes";
 import LoginScreen from "./components/LoginScreen";
+import { supabase } from "./utils/supabaseClient";
 
 export default function App() {
   const [theme, setTheme] = useState<ThemeId>(() => {
@@ -41,85 +42,61 @@ export default function App() {
     localStorage.setItem("shibani-theme", theme);
   }, [theme]);
 
-  // Auth Initialization and State Listeners
+  // Auth Initialization and State Listeners using native Supabase SDK with proxy
   useEffect(() => {
+    let active = true;
+
     async function initAuth() {
       try {
-        // 1. Check if we have hash parameters from a Magic Link redirect
-        const hash = window.location.hash;
-        if (hash && hash.includes("access_token=")) {
-          const params = new URLSearchParams(hash.substring(1)); // strip '#'
-          const accessToken = params.get("access_token");
-          
-          if (accessToken) {
-            // Clean the URL hash to keep UI clean
-            window.history.replaceState(null, "", window.location.pathname + window.location.search);
-
-            // Verify session with server
-            const verified = await verifySessionWithServer(accessToken);
-            if (verified) {
-              setAuthLoading(false);
-              return;
-            }
-          }
+        const { data: { session: activeSession }, error } = await supabase.auth.getSession();
+        
+        if (error) {
+          console.error("Error checking session:", error);
         }
 
-        // 2. Check if we have an existing session in localStorage
-        const storedSessionStr = localStorage.getItem("shibani_session");
-        if (storedSessionStr) {
-          try {
-            const storedSession = JSON.parse(storedSessionStr);
-            if (storedSession && storedSession.access_token) {
-              const verified = await verifySessionWithServer(storedSession.access_token);
-              if (verified) {
-                setAuthLoading(false);
-                return;
-              }
-            }
-          } catch (e) {
-            console.error("Failed to parse stored session:", e);
-          }
+        if (active && activeSession) {
+          console.log("Restored active session on load:", activeSession.user?.email);
+          setSession(activeSession);
+          setAuthenticatedUser(activeSession.user.id, activeSession.access_token);
+          await handleMigration(activeSession.user.id);
+        } else if (active) {
+          setSession(null);
+          setAuthenticatedUser(null, null);
         }
-
-        // Default: No session
-        setSession(null);
-        setAuthenticatedUser(null, null);
       } catch (err) {
         console.error("Auth initialization failed:", err);
       } finally {
-        setAuthLoading(false);
-      }
-    }
-
-    async function verifySessionWithServer(accessToken: string): Promise<boolean> {
-      try {
-        const response = await fetch("/api/auth/session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ access_token: accessToken })
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          setSession(data);
-          setAuthenticatedUser(data.user.id, data.access_token);
-          // Store session locally
-          localStorage.setItem("shibani_session", JSON.stringify(data));
-          // Perform migration if needed
-          await handleMigration(data.user.id);
-          return true;
-        } else {
-          // Token is expired or invalid, clear any stored session
-          localStorage.removeItem("shibani_session");
-          return false;
+        if (active) {
+          setAuthLoading(false);
         }
-      } catch (err) {
-        console.error("Failed to verify session with server:", err);
-        return false;
       }
     }
 
+    // Run session check on load
     initAuth();
+
+    // Setup native onAuthStateChange listener to handle login, token refresh, and sign-out automatically
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, currentSession) => {
+      console.log(`[Supabase Auth Event] ${event}`);
+      if (!active) return;
+
+      if (currentSession) {
+        setSession(currentSession);
+        setAuthenticatedUser(currentSession.user.id, currentSession.access_token);
+        await handleMigration(currentSession.user.id);
+      } else {
+        setSession(null);
+        setAuthenticatedUser(null, null);
+      }
+      setAuthLoading(false);
+    });
+
+    return () => {
+      active = false;
+      if (subscription) {
+        subscription.unsubscribe();
+      }
+    };
   }, []);
 
   const handleMigration = async (newUserId: string) => {
@@ -156,11 +133,17 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem("shibani_session");
-    setSession(null);
-    setAuthenticatedUser(null, null);
-    triggerNotification("Signed out successfully.", "info");
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+      triggerNotification("Signed out successfully.", "info");
+    } catch (err) {
+      console.error("Error signing out:", err);
+      // Clean fallback if signOut fails
+      setSession(null);
+      setAuthenticatedUser(null, null);
+      triggerNotification("Signed out with local fallback.", "info");
+    }
   };
 
   // Trigger a self-fading overlay notification for tool executions
