@@ -1,16 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
 
-// A valid, non-secret 3-part JWT representing an 'anon' role with a long expiry.
-// This allows the Supabase client to initialize client-side without throwing "Forbidden use of secret API key in browser"
-// or encountering token parsing errors.
-export const DUMMY_JWT = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlhdCI6MTUwMDAwMDAwMCwiZXhwIjoyNTAwMDAwMDAwfQ.signature";
+// Retrieve the Supabase URL and Publishable (anon) Key from client-side env variables.
+const supabaseUrl = (((import.meta as any).env?.VITE_SUPABASE_URL as string) || "").trim().replace(/\/+$/, "");
+const supabaseAnonKey = (((import.meta as any).env?.VITE_SUPABASE_PUBLISHABLE_KEY as string) || "").trim();
 
-// We use our secure backend Express proxy as the supabaseUrl.
-// This routes all authentication, session restoration, and token refreshes securely through our server,
-// where we safely attach the real secret SUPABASE_KEY.
-const proxyUrl = `${window.location.origin}/api/auth/proxy`;
-
-export const supabase = createClient(proxyUrl, DUMMY_JWT, {
+// Initialize the native Supabase client for safe direct client-side requests
+export const supabase = createClient(supabaseUrl || "https://placeholder.supabase.co", supabaseAnonKey || "placeholder-key", {
   auth: {
     persistSession: true,
     autoRefreshToken: true,

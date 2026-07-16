@@ -718,68 +718,9 @@ function optimizeContents(contents: any[]): any[] {
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
-  const PORT = process.env.PORT || 3000;
+  const PORT = 3000;
 
   app.use(express.json());
-
-  // Supabase secure auth/REST proxy to avoid exposing SUPABASE_KEY to the client
-  app.all("/api/auth/proxy/*", async (req, res) => {
-    if (!supabaseUrl || !supabaseKey) {
-      return res.status(500).json({ error: "Supabase not configured on backend." });
-    }
-    const pathPart = req.params[0] || "";
-    const queryString = req.url.includes("?") ? req.url.substring(req.url.indexOf("?")) : "";
-    const targetUrl = `${supabaseUrl}/${pathPart}${queryString}`;
-
-    // Forward headers, but replace key
-    const headers = { ...req.headers } as Record<string, string>;
-    
-    // Remove host and other connection specific headers
-    delete headers.host;
-    delete headers.connection;
-    delete headers["content-length"];
-    delete headers["transfer-encoding"];
-    delete headers["content-encoding"];
-
-    const dummyJwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlhdCI6MTUwMDAwMDAwMCwiZXhwIjoyNTAwMDAwMDAwfQ.signature";
-
-    // Replace dummy key with real secret key
-    if (headers["apikey"] === dummyJwt) {
-      headers["apikey"] = supabaseKey;
-    }
-    headers["apikey"] = supabaseKey;
-
-    if (headers["authorization"] === `Bearer ${dummyJwt}`) {
-      headers["authorization"] = `Bearer ${supabaseKey}`;
-    }
-
-    try {
-      const fetchOptions: any = {
-        method: req.method,
-        headers: headers,
-      };
-
-      if (req.method !== "GET" && req.method !== "HEAD") {
-        fetchOptions.body = JSON.stringify(req.body || {});
-      }
-
-      const response = await fetch(targetUrl, fetchOptions);
-      const data = await response.text();
-
-      res.status(response.status);
-      
-      response.headers.forEach((val, key) => {
-        if (key.toLowerCase() !== "content-encoding" && key.toLowerCase() !== "transfer-encoding" && key.toLowerCase() !== "content-length") {
-          res.setHeader(key, val);
-        }
-      });
-
-      res.send(data);
-    } catch (err: any) {
-      console.error("Proxy error:", err);
-      res.status(500).json({ error: err.message || "Proxy error" });
-    }
-  });
 
   // REST API Route for standard Chat Mode with streaming support
   app.post("/api/chat", async (req, res) => {
