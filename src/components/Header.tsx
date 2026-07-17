@@ -222,8 +222,9 @@ export default function Header({
                         alt={`Look ${lookNum}`}
                         className="w-full h-full object-cover"
                         onError={(e) => {
-                          // Fail-safe: if image hasn't loaded or isn't present, show a high quality fallback
-                          (e.target as HTMLImageElement).src = `https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80`;
+                          // Fail-safe: if image hasn't loaded or isn't present, show a local fallback
+                          e.currentTarget.onerror = null;
+                          e.currentTarget.src = "/assets/avatar/look-1.jpg";
                         }}
                       />
                       {isSelected && (

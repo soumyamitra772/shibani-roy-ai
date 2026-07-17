@@ -222,7 +222,8 @@ export default function VoiceVisualizer({
               state === "disconnected" ? "opacity-35 hover:opacity-50" : "opacity-85"
             }`}
             onError={(e) => {
-              (e.target as HTMLImageElement).src = `https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=400&q=80`;
+              e.currentTarget.onerror = null;
+              e.currentTarget.src = "/assets/avatar/look-1.jpg";
             }}
           />
 
