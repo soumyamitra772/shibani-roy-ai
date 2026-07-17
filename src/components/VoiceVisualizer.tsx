@@ -18,6 +18,7 @@ interface VoiceVisualizerProps {
   onDisconnect: () => void;
   theme: ThemeId;
   isGeneratingImage?: boolean;
+  avatarUrl: string;
 }
 
 export default function VoiceVisualizer({
@@ -29,6 +30,7 @@ export default function VoiceVisualizer({
   onDisconnect,
   theme,
   isGeneratingImage = false,
+  avatarUrl,
 }: VoiceVisualizerProps) {
   const [bars, setBars] = useState<number[]>(Array(24).fill(10));
 
@@ -211,6 +213,24 @@ export default function VoiceVisualizer({
           className={`relative flex items-center justify-center w-40 h-40 rounded-full bg-gradient-to-tr ${colors.gradient} border border-white/10 overflow-hidden shadow-inner cursor-pointer`}
           onClick={state === "disconnected" ? onConnect : undefined}
         >
+          {/* Base Avatar Image filling the entire core */}
+          <img
+            src={avatarUrl}
+            alt="Shibani Roy"
+            referrerPolicy="no-referrer"
+            className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-500 ${
+              state === "disconnected" ? "opacity-35 hover:opacity-50" : "opacity-85"
+            }`}
+            onError={(e) => {
+              (e.target as HTMLImageElement).src = `https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=400&q=80`;
+            }}
+          />
+
+          {/* Dark Overlay for non-speaking states to focus on status icon */}
+          {state !== "speaking" && state !== "listening" && (
+            <div className="absolute inset-0 bg-black/30 backdrop-blur-[0.5px]" />
+          )}
+
           {/* Pulsing neon particles or sparkles */}
           {state === "thinking" && (
             <motion.div
@@ -220,30 +240,20 @@ export default function VoiceVisualizer({
             />
           )}
 
+          {/* State indicators centered over the avatar */}
           <div className="z-10 flex flex-col items-center justify-center text-center">
             {isGeneratingImage ? (
               <motion.div
                 animate={{ scale: [1, 1.15, 1], rotate: [0, 5, -5, 0] }}
                 transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
               >
-                <Camera className="w-12 h-12 text-purple-400 drop-shadow-[0_0_10px_rgba(168,85,247,0.5)]" />
+                <Camera className="w-12 h-12 text-purple-400 drop-shadow-[0_2px_10px_rgba(168,85,247,0.5)]" />
               </motion.div>
             ) : state === "disconnected" ? (
-              <PhoneOff className="w-12 h-12 text-gray-500 group-hover:text-rose-400 transition-colors duration-300" />
+              <PhoneOff className="w-12 h-12 text-white/80 group-hover:text-rose-400 transition-colors duration-300 drop-shadow-[0_2px_8px_rgba(0,0,0,0.5)]" />
             ) : state === "thinking" ? (
-              <Sparkles className="w-12 h-12 text-purple-400 animate-spin" />
-            ) : (
-              <motion.div
-                animate={state === "speaking" ? { y: [0, -4, 0] } : {}}
-                transition={{ duration: 0.6, repeat: Infinity }}
-                className="w-16 h-16 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center overflow-hidden"
-              >
-                {/* Visual Avatar Image Placeholder */}
-                <div className="w-full h-full bg-gradient-to-br from-pink-500/20 to-violet-500/20 flex items-center justify-center text-rose-300 font-mono text-sm tracking-widest font-bold">
-                  SR
-                </div>
-              </motion.div>
-            )}
+              <Sparkles className="w-12 h-12 text-purple-300 animate-spin drop-shadow-[0_2px_8px_rgba(0,0,0,0.5)]" />
+            ) : null}
           </div>
         </motion.div>
       </div>

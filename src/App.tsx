@@ -17,6 +17,7 @@ import { getOrCreateUserId, setAuthenticatedUser } from "./utils/userId";
 import { ThemeId, THEMES } from "./utils/themes";
 import LoginScreen from "./components/LoginScreen";
 import { supabase } from "./utils/supabaseClient";
+import { getActiveAvatar, getAvatarPreference, saveAvatarPreference } from "./utils/avatarUtils";
 
 export default function App() {
   const [theme, setTheme] = useState<ThemeId>(() => {
@@ -36,6 +37,25 @@ export default function App() {
   const [latestVoiceImage, setLatestVoiceImage] = useState<{ url: string; prompt: string } | null>(null);
   const [isVoiceGeneratingImage, setIsVoiceGeneratingImage] = useState(false);
   const [isChatGeneratingImage, setIsChatGeneratingImage] = useState(false);
+
+  // Avatar system state
+  const [avatarPreference, setAvatarPreference] = useState<string>("auto");
+
+  // Sync avatar preference to DB / LocalStorage when session changes
+  useEffect(() => {
+    let active = true;
+    async function loadPreference() {
+      const userId = session?.user?.id || null;
+      const pref = await getAvatarPreference(userId);
+      if (active) {
+        setAvatarPreference(pref);
+      }
+    }
+    loadPreference();
+    return () => {
+      active = false;
+    };
+  }, [session]);
 
   // Sync theme changes to localStorage
   useEffect(() => {
@@ -151,6 +171,21 @@ export default function App() {
     setNotification({ message, type });
     setTimeout(() => setNotification(null), 4000);
   };
+
+  const handleAvatarPreferenceChange = async (newPref: string) => {
+    setAvatarPreference(newPref);
+    const userId = session?.user?.id || null;
+    await saveAvatarPreference(userId, newPref);
+    
+    if (newPref === "auto") {
+      triggerNotification("Enabled Shibani's daily auto-rotating look! 🔄", "success");
+    } else {
+      const lookNum = newPref.split("-")[1];
+      triggerNotification(`Styled Shibani with Look ${lookNum}! 📸`, "success");
+    }
+  };
+
+  const activeAvatarUrl = getActiveAvatar(avatarPreference);
 
   // Safe and native image downloader
   const handleDownloadImage = async (imageUrl: string, description: string) => {
@@ -557,6 +592,8 @@ export default function App() {
           onThemeChange={setTheme} 
           session={session} 
           onLogout={handleLogout} 
+          avatarPreference={avatarPreference}
+          onAvatarPreferenceChange={handleAvatarPreferenceChange}
         />
 
         {!session ? (
@@ -585,6 +622,7 @@ export default function App() {
                         onDisconnect={disconnect}
                         theme={theme}
                         isGeneratingImage={isVoiceGeneratingImage}
+                        avatarUrl={activeAvatarUrl}
                       />
                     </div>
 
@@ -650,6 +688,7 @@ export default function App() {
                       onNewChat={handleNewChat}
                       theme={theme}
                       isGeneratingImage={isChatGeneratingImage}
+                      avatarUrl={activeAvatarUrl}
                     />
                   </motion.div>
                 )}

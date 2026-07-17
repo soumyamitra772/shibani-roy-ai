@@ -725,7 +725,7 @@ function optimizeContents(contents: any[]): any[] {
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
-  const PORT = process.env.PORT || 3000;
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
   app.use(express.json());
 
@@ -1361,6 +1361,9 @@ async function startServer() {
       }
     });
   });
+
+  // Serve raw assets directory statically (e.g., assets/avatar/ looks)
+  app.use("/assets", express.static(path.join(process.cwd(), "assets")));
 
   // Vite development middleware vs Static production serving
   if (process.env.NODE_ENV !== "production") {

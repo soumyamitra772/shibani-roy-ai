@@ -18,6 +18,7 @@ interface ChatWindowProps {
   onNewChat: () => void;
   theme: ThemeId;
   isGeneratingImage?: boolean;
+  avatarUrl: string;
 }
 
 const CONVERSATION_STARTERS = [
@@ -43,6 +44,7 @@ export default function ChatWindow({
   onNewChat,
   theme,
   isGeneratingImage = false,
+  avatarUrl,
 }: ChatWindowProps) {
   const [input, setInput] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -112,8 +114,10 @@ export default function ChatWindow({
     <div id="chat-window-card" className={`flex flex-col h-[520px] rounded-3xl border ${activeTheme.borderColor} ${activeTheme.cardBg} backdrop-blur-xl shadow-2xl overflow-hidden`}>
       {/* Top Controller Tray */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 bg-white/5 select-none">
-        <div className="flex items-center gap-2">
-          <MessageSquare className="w-5 h-5 text-rose-400" />
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-full border border-rose-500/20 overflow-hidden shadow-md shrink-0">
+            <img src={avatarUrl} alt="Shibani" className="w-full h-full object-cover" />
+          </div>
           <h2 className="text-md font-semibold text-white tracking-wide">
             Chat with Shibani Roy
           </h2>
@@ -148,8 +152,10 @@ export default function ChatWindow({
           if (visibleMessages.length === 0) {
             return (
               <div className="flex flex-col items-center justify-center h-full text-center p-6 space-y-4">
-                <div className="w-16 h-16 rounded-full bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
-                  <Sparkles className="w-8 h-8 animate-pulse" />
+                <div className="w-20 h-20 rounded-full border border-rose-500/20 flex items-center justify-center p-0.5 bg-gradient-to-tr from-rose-500 to-pink-500 shadow-lg overflow-hidden">
+                  <div className="w-full h-full rounded-full overflow-hidden bg-[#12101a]">
+                    <img src={avatarUrl} alt="Shibani" className="w-full h-full object-cover" />
+                  </div>
                 </div>
                 <div>
                   <h3 className="text-lg font-medium text-white">Ask Shibani anything</h3>
@@ -165,8 +171,18 @@ export default function ChatWindow({
             return (
               <div
                 key={msg.id}
-                className={`flex ${isAssistant ? "justify-start" : "justify-end"} group`}
+                className={`flex ${isAssistant ? "justify-start" : "justify-end"} items-start gap-2.5 group`}
               >
+                {isAssistant && (
+                  <div className="flex-shrink-0 w-8 h-8 rounded-full border border-rose-500/20 overflow-hidden mt-1 shadow-md">
+                    <img
+                      src={avatarUrl}
+                      alt="Shibani"
+                      className="w-full h-full object-cover"
+                      referrerPolicy="no-referrer"
+                    />
+                  </div>
+                )}
                 <div className={`relative max-w-[85%] sm:max-w-[75%] rounded-2xl p-4 shadow-lg transition-all duration-300 ${
                   isAssistant
                     ? msg.isToolCall
