@@ -1,6 +1,8 @@
 import express from "express";
 import http from "http";
 import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import { WebSocketServer } from "ws";
 import { createServer as createViteServer } from "vite";
@@ -1362,11 +1364,59 @@ async function startServer() {
     });
   });
 
-  // Serve raw assets directory statically (e.g., assets/avatar/ looks)
-  app.use("/assets", express.static(path.join(process.cwd(), "assets")));
+  // Diagnostic Logging Function
+  const logDirectoryRecursive = (dirPath: string, depth = 0): void => {
+    try {
+      if (!fs.existsSync(dirPath)) {
+        console.log(`[Diagnostic] Directory does not exist: ${dirPath}`);
+        return;
+      }
+      const files = fs.readdirSync(dirPath);
+      console.log(`[Diagnostic] Contents of ${dirPath} (depth ${depth}):`);
+      for (const file of files) {
+        const fullPath = path.join(dirPath, file);
+        const stat = fs.statSync(fullPath);
+        if (stat.isDirectory()) {
+          console.log(`[Diagnostic] ${"  ".repeat(depth)}📁 ${file}/`);
+          if (depth < 2) {
+            logDirectoryRecursive(fullPath, depth + 1);
+          }
+        } else {
+          console.log(`[Diagnostic] ${"  ".repeat(depth)}📄 ${file} (${stat.size} bytes)`);
+        }
+      }
+    } catch (err: any) {
+      console.error(`[Diagnostic] Error scanning ${dirPath}:`, err.message);
+    }
+  };
+
+  const resolvedFilename = typeof __filename !== "undefined" ? __filename : fileURLToPath(import.meta.url);
+
+  const isProduction = process.env.NODE_ENV === "production" || 
+                       resolvedFilename.includes("dist") || 
+                       !fs.existsSync(path.join(process.cwd(), "vite.config.ts"));
+
+  console.log("=== SERVER DIAGNOSTICS START ===");
+  console.log(`[Diagnostic] NODE_ENV: ${process.env.NODE_ENV}`);
+  console.log(`[Diagnostic] isProduction (Resolved): ${isProduction}`);
+  console.log(`[Diagnostic] resolvedFilename: ${resolvedFilename}`);
+  console.log(`[Diagnostic] process.cwd(): ${process.cwd()}`);
+  
+  const distPath = path.join(process.cwd(), "dist");
+  const publicPath = path.join(process.cwd(), "public");
+  const assetsPath = path.join(process.cwd(), "assets");
+
+  console.log(`[Diagnostic] distPath: ${distPath}`);
+  console.log(`[Diagnostic] publicPath: ${publicPath}`);
+  console.log(`[Diagnostic] assetsPath: ${assetsPath}`);
+
+  logDirectoryRecursive(distPath);
+  logDirectoryRecursive(publicPath);
+  logDirectoryRecursive(assetsPath);
+  console.log("=== SERVER DIAGNOSTICS END ===");
 
   // Vite development middleware vs Static production serving
-  if (process.env.NODE_ENV !== "production") {
+  if (!isProduction) {
     console.log("Running in development mode. Mounting Vite middleware...");
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -1375,7 +1425,6 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     console.log("Running in production mode. Serving static assets...");
-    const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
       res.sendFile(path.join(distPath, "index.html"));
