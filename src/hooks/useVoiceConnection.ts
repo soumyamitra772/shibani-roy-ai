@@ -39,8 +39,12 @@ export function useVoiceConnection({
   const outputAudioCtxRef = useRef<AudioContext | null>(null);
   const outputAnalyserRef = useRef<AnalyserNode | null>(null);
   const outputGainNodeRef = useRef<GainNode | null>(null);
+  const outputAudioRef = useRef<HTMLAudioElement | null>(null);
   const scheduledSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const nextStartTimeRef = useRef<number>(0);
+
+  // Screen Wake Lock API reference
+  const wakeLockRef = useRef<any | null>(null);
 
   // Animation Frame references
   const volumePollIdRef = useRef<number | null>(null);
@@ -50,6 +54,56 @@ export function useVoiceConnection({
   useEffect(() => {
     isMutedRef.current = isMuted;
   }, [isMuted]);
+
+  /**
+   * Request Screen Wake Lock to prevent mobile devices from sleeping
+   */
+  const requestWakeLock = useCallback(async () => {
+    if ("wakeLock" in navigator) {
+      try {
+        if (!wakeLockRef.current) {
+          wakeLockRef.current = await navigator.wakeLock.request("screen");
+          console.log("[AudioEngine] Screen Wake Lock acquired successfully");
+        }
+      } catch (err) {
+        console.warn("[AudioEngine] Failed to acquire Screen Wake Lock:", err);
+      }
+    }
+  }, []);
+
+  /**
+   * Release Screen Wake Lock
+   */
+  const releaseWakeLock = useCallback(async () => {
+    if (wakeLockRef.current) {
+      try {
+        await wakeLockRef.current.release();
+        console.log("[AudioEngine] Screen Wake Lock released successfully");
+      } catch (err) {
+        console.error("[AudioEngine] Error releasing Screen Wake Lock:", err);
+      }
+      wakeLockRef.current = null;
+    }
+  }, []);
+
+  // Handle visibility change to re-request Wake Lock if connection is active
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (
+        document.visibilityState === "visible" &&
+        state !== "disconnected" &&
+        state !== "error"
+      ) {
+        console.log("[AudioEngine] Tab became visible, re-requesting Screen Wake Lock...");
+        await requestWakeLock();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [state, requestWakeLock]);
 
   /**
    * Stop all active and scheduled speech chunks instantly (Interruption Handling)
@@ -75,6 +129,9 @@ export function useVoiceConnection({
     console.log("[AudioEngine] Initiating clean disconnect...");
     setState("disconnected");
 
+    // Release Screen Wake Lock
+    releaseWakeLock();
+
     // Cancel animation frame polling
     if (volumePollIdRef.current) {
       cancelAnimationFrame(volumePollIdRef.current);
@@ -89,6 +146,15 @@ export function useVoiceConnection({
 
     // Stop and clear playback
     stopPlayback();
+
+    // Clean up standard audio element
+    if (outputAudioRef.current) {
+      try {
+        outputAudioRef.current.pause();
+        outputAudioRef.current.srcObject = null;
+      } catch (e) {}
+      outputAudioRef.current = null;
+    }
 
     // Clean up microphone stream track
     if (streamRef.current) {
@@ -185,6 +251,9 @@ export function useVoiceConnection({
     setState("connecting");
 
     try {
+      // Request Screen Wake Lock on connect
+      await requestWakeLock();
+
       // Initialize output AudioContext (24kHz) for speaker output
       const outCtx = new (window.AudioContext || (window as any).webkitAudioContext)({
         sampleRate: 24000,
@@ -200,7 +269,19 @@ export function useVoiceConnection({
       outputGainNodeRef.current = outGain;
 
       outAnalyser.connect(outGain);
-      outGain.connect(outCtx.destination);
+
+      // Create a standard HTML <audio> element and route output stream through it for Bluetooth device routing support
+      const dest = outCtx.createMediaStreamDestination();
+      outGain.connect(dest);
+
+      const audioEl = new Audio();
+      audioEl.autoplay = true;
+      audioEl.srcObject = dest.stream;
+      outputAudioRef.current = audioEl;
+
+      audioEl.play().catch((err) => {
+        console.warn("[AudioEngine] Error playing programmatic HTML5 audio element:", err);
+      });
 
       // Request microphone permissions
       const stream = await navigator.mediaDevices.getUserMedia({
