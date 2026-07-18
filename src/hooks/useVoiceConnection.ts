@@ -62,7 +62,14 @@ export function useVoiceConnection({
     if ("wakeLock" in navigator) {
       try {
         if (!wakeLockRef.current) {
-          wakeLockRef.current = await navigator.wakeLock.request("screen");
+          const sentinel = await navigator.wakeLock.request("screen");
+          sentinel.addEventListener("release", () => {
+            console.log("[AudioEngine] Screen Wake Lock sentinel was released");
+            if (wakeLockRef.current === sentinel) {
+              wakeLockRef.current = null;
+            }
+          });
+          wakeLockRef.current = sentinel;
           console.log("[AudioEngine] Screen Wake Lock acquired successfully");
         }
       } catch (err) {
@@ -258,6 +265,9 @@ export function useVoiceConnection({
       const outCtx = new (window.AudioContext || (window as any).webkitAudioContext)({
         sampleRate: 24000,
       });
+      if (outCtx.state === "suspended") {
+        await outCtx.resume();
+      }
       outputAudioCtxRef.current = outCtx;
 
       const outAnalyser = outCtx.createAnalyser();
@@ -283,9 +293,20 @@ export function useVoiceConnection({
         console.warn("[AudioEngine] Error playing programmatic HTML5 audio element:", err);
       });
 
-      // Request microphone permissions
+      // Log available devices for testing/debugging purposes
+      if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+        navigator.mediaDevices.enumerateDevices().then((devices) => {
+          console.log(
+            "[AudioEngine] Initialized devices:",
+            devices.map((d) => `${d.kind}: ${d.label} (ID: ${d.deviceId})`)
+          );
+        }).catch(() => {});
+      }
+
+      // Request microphone permissions targeting ideal system default device
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
+          deviceId: { ideal: "default" },
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
@@ -297,6 +318,9 @@ export function useVoiceConnection({
       const inCtx = new (window.AudioContext || (window as any).webkitAudioContext)({
         sampleRate: 16000,
       });
+      if (inCtx.state === "suspended") {
+        await inCtx.resume();
+      }
       inputAudioCtxRef.current = inCtx;
 
       const inSource = inCtx.createMediaStreamSource(stream);
