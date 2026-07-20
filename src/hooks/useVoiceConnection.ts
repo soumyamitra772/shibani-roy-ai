@@ -159,6 +159,7 @@ export function useVoiceConnection({
       try {
         outputAudioRef.current.pause();
         outputAudioRef.current.srcObject = null;
+        outputAudioRef.current.remove();
       } catch (e) {}
       outputAudioRef.current = null;
     }
@@ -280,15 +281,23 @@ export function useVoiceConnection({
 
       outAnalyser.connect(outGain);
 
-      // Create a standard HTML <audio> element and route output stream through it for Bluetooth device routing support
+      // Create a standard HTML <audio> element, append to the DOM, and route output stream through it for Bluetooth device routing support
       const dest = outCtx.createMediaStreamDestination();
       outGain.connect(dest);
-
-      const audioEl = new Audio();
+ 
+      const audioEl = document.createElement("audio");
+      audioEl.id = "voice-audio-output";
       audioEl.autoplay = true;
+      audioEl.style.position = "absolute";
+      audioEl.style.width = "0px";
+      audioEl.style.height = "0px";
+      audioEl.style.pointerEvents = "none";
+      audioEl.style.opacity = "0";
+      
+      document.body.appendChild(audioEl);
       audioEl.srcObject = dest.stream;
       outputAudioRef.current = audioEl;
-
+ 
       audioEl.play().catch((err) => {
         console.warn("[AudioEngine] Error playing programmatic HTML5 audio element:", err);
       });
