@@ -1,3 +1,5 @@
+import "./instrument";
+import * as Sentry from "@sentry/node";
 import express from "express";
 import http from "http";
 import path from "path";
@@ -80,6 +82,7 @@ async function saveFactToDb(userId: string, fact: string, category: string): Pro
           console.warn("Supabase 'memories' table does not exist yet. Please create it in your Supabase SQL editor: CREATE TABLE memories (id SERIAL PRIMARY KEY, user_id TEXT, fact TEXT, category TEXT, created_at TIMESTAMPTZ);. Falling back to in-memory storage.");
         } else {
           console.warn("Supabase insert warning:", error.message || error);
+          Sentry.captureException(new Error(`Supabase insert error: ${error.message || JSON.stringify(error)}`), { tags: { feature: "memory" } });
         }
         // Fallback to in-memory on database/table errors
         inMemoryMemories.push(item);
@@ -88,6 +91,7 @@ async function saveFactToDb(userId: string, fact: string, category: string): Pro
       return true;
     } catch (err) {
       console.warn("Failed to insert into Supabase, falling back to in-memory:", err);
+      Sentry.captureException(err, { tags: { feature: "memory" } });
       inMemoryMemories.push(item);
       return false;
     }
@@ -111,12 +115,14 @@ async function recallFactsFromDb(userId: string): Promise<MemoryItem[]> {
           console.warn("Supabase 'memories' table does not exist yet. Please create it in your Supabase SQL editor: CREATE TABLE memories (id SERIAL PRIMARY KEY, user_id TEXT, fact TEXT, category TEXT, created_at TIMESTAMPTZ);. Falling back to in-memory storage.");
         } else {
           console.warn("Supabase select warning:", error.message || error);
+          Sentry.captureException(new Error(`Supabase select error: ${error.message || JSON.stringify(error)}`), { tags: { feature: "memory" } });
         }
         return inMemoryMemories.filter(m => m.user_id === userId);
       }
       return data || [];
     } catch (err) {
       console.warn("Failed to select from Supabase, falling back to in-memory:", err);
+      Sentry.captureException(err, { tags: { feature: "memory" } });
       return inMemoryMemories.filter(m => m.user_id === userId);
     }
   } else {
@@ -143,6 +149,7 @@ async function generateContentWithRetry(params: any, retries = 3, delay = 1000):
         await new Promise((resolve) => setTimeout(resolve, delay));
         delay *= 2;
       } else {
+        Sentry.captureException(err, { tags: { feature: "chat" } });
         throw err;
       }
     }
@@ -937,6 +944,7 @@ async function startServer() {
       res.end();
     } catch (err: any) {
       console.error("Error in /api/chat stream:", err);
+      Sentry.captureException(err, { tags: { feature: "chat" } });
       if (!res.headersSent) {
         res.status(500).json({ error: err.message || "Failed to generate stream" });
       } else {
@@ -968,10 +976,12 @@ async function startServer() {
         },
       });
       if (error) {
+        Sentry.captureException(error, { tags: { feature: "auth" } });
         return res.status(400).json({ error: error.message });
       }
       res.json({ success: true });
     } catch (err: any) {
+      Sentry.captureException(err, { tags: { feature: "auth" } });
       res.status(500).json({ error: err.message || "An error occurred while sending the magic link." });
     }
   });
@@ -988,6 +998,9 @@ async function startServer() {
     try {
       const { data: { user }, error } = await supabase.auth.getUser(access_token);
       if (error || !user) {
+        if (error) {
+          Sentry.captureException(error, { tags: { feature: "auth" } });
+        }
         return res.status(401).json({ error: "Invalid or expired session token." });
       }
       res.json({
@@ -998,6 +1011,7 @@ async function startServer() {
         access_token,
       });
     } catch (err: any) {
+      Sentry.captureException(err, { tags: { feature: "auth" } });
       res.status(500).json({ error: err.message || "An error occurred while verifying the session." });
     }
   });
@@ -1052,6 +1066,7 @@ async function startServer() {
       });
     } catch (err: any) {
       console.error("[Migration] Unexpected error:", err);
+      Sentry.captureException(err, { tags: { feature: "auth" } });
       return res.status(500).json({ error: err.message || "Failed to execute migration." });
     }
   });
@@ -1149,6 +1164,7 @@ async function startServer() {
       }
     } catch (err: any) {
       console.error("[ImageGen] Error calling Fal.ai:", err);
+      Sentry.captureException(err, { tags: { feature: "image_generation" } });
       return res.status(500).json({
         success: false,
         error: err.message || "Failed to generate image"
@@ -1310,6 +1326,7 @@ async function startServer() {
           },
           onerror: (err: any) => {
             console.error("Gemini Live API error:", err);
+            Sentry.captureException(err, { tags: { feature: "voice" } });
             clientWs.send(JSON.stringify({ type: "error", message: err.message || "Gemini Live session error" }));
           }
         }
@@ -1320,6 +1337,7 @@ async function startServer() {
 
     } catch (error: any) {
       console.error("Failed to connect to Gemini Live:", error);
+      Sentry.captureException(error, { tags: { feature: "voice" } });
       clientWs.send(JSON.stringify({ type: "error", message: error.message || "Failed to establish Gemini Live session" }));
       clientWs.close();
       return;
@@ -1414,6 +1432,9 @@ async function startServer() {
   logDirectoryRecursive(publicPath);
   logDirectoryRecursive(assetsPath);
   console.log("=== SERVER DIAGNOSTICS END ===");
+
+  // Sentry error handler middleware - must be registered after all routes and before any other error handlers
+  Sentry.setupExpressErrorHandler(app);
 
   // Vite development middleware vs Static production serving
   if (!isProduction) {
