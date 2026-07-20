@@ -1,6 +1,7 @@
 import "./instrument";
 import * as Sentry from "@sentry/node";
 import express from "express";
+import { rateLimit } from "express-rate-limit";
 import http from "http";
 import path from "path";
 import fs from "fs";
@@ -738,6 +739,35 @@ async function startServer() {
 
   app.use(express.json());
 
+  const apiLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    limit: 60,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: { error: "Too many requests. Please wait a minute and try again." },
+    statusCode: 429,
+  });
+
+  const imageGenLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    limit: 10,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: { error: "Too many image generations requested. Please wait a minute before trying again." },
+    statusCode: 429,
+  });
+
+  const otpLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    limit: 5,
+    standardHeaders: "draft-7",
+    legacyHeaders: false,
+    message: { error: "Too many login attempts. Please wait 15 minutes before requesting another magic link." },
+    statusCode: 429,
+  });
+
+  app.use("/api/", apiLimiter);
+
   // REST API Route for standard Chat Mode with streaming support
   app.post("/api/chat", async (req, res) => {
     // Auth protection
@@ -955,7 +985,7 @@ async function startServer() {
   });
 
   // REST API Route to send a passwordless OTP/magic link
-  app.post("/api/auth/otp", async (req, res) => {
+  app.post("/api/auth/otp", otpLimiter, async (req, res) => {
     const { email } = req.body;
     if (!email) {
       return res.status(400).json({ error: "Missing email parameter." });
@@ -1018,16 +1048,30 @@ async function startServer() {
 
   // REST API Route to migrate memories from an anonymous ID to an authenticated ID
   app.post("/api/auth/migrate", async (req, res) => {
-    const { anonymousId, authenticatedId } = req.body;
-    if (!anonymousId || !authenticatedId) {
-      return res.status(400).json({ error: "Missing anonymousId or authenticatedId parameters." });
+    const { anonymousId } = req.body;
+    if (!anonymousId) {
+      return res.status(400).json({ error: "Missing anonymousId parameter." });
     }
 
     if (!supabase) {
       return res.json({ success: true, migrated: false, count: 0, message: "Supabase not configured, skipping migration." });
     }
 
+    // Require authorization header and verify session token
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null;
+    if (!token) {
+      return res.status(401).json({ error: "Unauthorized: Missing authentication token." });
+    }
+
     try {
+      const { data: { user }, error: authErr } = await supabase.auth.getUser(token);
+      if (authErr || !user) {
+        return res.status(401).json({ error: "Unauthorized: Invalid or expired session." });
+      }
+
+      const authenticatedId = user.id;
+
       // Verify if authenticated user already has memories to determine if this is their first login
       const { count, error: countErr } = await supabase
         .from("memories")
@@ -1104,7 +1148,7 @@ async function startServer() {
   });
 
   // REST API Route to generate consistent images of Shibani via Fal.ai
-  app.post("/api/tools/generate-image", async (req, res) => {
+  app.post("/api/tools/generate-image", imageGenLimiter, async (req, res) => {
     const { description } = req.body;
     if (!description) {
       return res.status(400).json({ error: "Missing required 'description' parameter." });

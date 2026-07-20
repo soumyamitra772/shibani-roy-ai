@@ -78,7 +78,7 @@ export default function App() {
           console.log("Restored active session on load:", activeSession.user?.email);
           setSession(activeSession);
           setAuthenticatedUser(activeSession.user.id, activeSession.access_token);
-          await handleMigration(activeSession.user.id);
+          await handleMigration(activeSession.user.id, activeSession.access_token);
         } else if (active) {
           setSession(null);
           setAuthenticatedUser(null, null);
@@ -103,7 +103,7 @@ export default function App() {
       if (currentSession) {
         setSession(currentSession);
         setAuthenticatedUser(currentSession.user.id, currentSession.access_token);
-        await handleMigration(currentSession.user.id);
+        await handleMigration(currentSession.user.id, currentSession.access_token);
       } else {
         setSession(null);
         setAuthenticatedUser(null, null);
@@ -119,18 +119,20 @@ export default function App() {
     };
   }, []);
 
-  const handleMigration = async (newUserId: string) => {
+  const handleMigration = async (newUserId: string, accessToken: string) => {
     const oldAnonId = localStorage.getItem("shibani_user_id");
     const migrationDoneKey = `shibani_migrated_${newUserId}`;
 
-    if (oldAnonId && !localStorage.getItem(migrationDoneKey)) {
+    if (oldAnonId && !localStorage.getItem(migrationDoneKey) && accessToken) {
       try {
         const res = await fetch("/api/auth/migrate", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { 
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${accessToken}`
+          },
           body: JSON.stringify({
-            anonymousId: oldAnonId,
-            authenticatedId: newUserId
+            anonymousId: oldAnonId
           })
         });
         if (res.ok) {
