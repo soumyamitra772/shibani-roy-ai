@@ -223,7 +223,7 @@ export default function VoiceVisualizer({
             }`}
             onError={(e) => {
               e.currentTarget.onerror = null;
-              e.currentTarget.src = "/assets/avatar/look-1.jpg";
+              e.currentTarget.src = "https://lkxxnumhlcdbqknmulmu.supabase.co/storage/v1/object/public/avatars/look-1.jpg";
             }}
           />
 

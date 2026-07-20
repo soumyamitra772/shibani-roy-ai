@@ -20,15 +20,17 @@ export function getDailyAvatarIndex(): number {
   return (dayOfYear % 8) + 1;
 }
 
+export const AVATAR_BASE_URL = "https://lkxxnumhlcdbqknmulmu.supabase.co/storage/v1/object/public/avatars";
+
 /**
  * Resolves the final path of the avatar based on the preference (e.g. "look-3" or "auto").
  */
 export function getActiveAvatar(preference: string): string {
   if (preference && preference !== "auto" && preference !== "") {
-    return `/assets/avatar/${preference}.jpg`;
+    return `${AVATAR_BASE_URL}/${preference}.jpg`;
   }
   const index = getDailyAvatarIndex();
-  return `/assets/avatar/look-${index}.jpg`;
+  return `${AVATAR_BASE_URL}/look-${index}.jpg`;
 }
 
 /**

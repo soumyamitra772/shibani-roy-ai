@@ -204,7 +204,7 @@ export default function Header({
                 const lookNum = i + 1;
                 const lookId = `look-${lookNum}`;
                 const isSelected = avatarPreference === lookId;
-                const imgSrc = `/assets/avatar/${lookId}.jpg`;
+                const imgSrc = `https://lkxxnumhlcdbqknmulmu.supabase.co/storage/v1/object/public/avatars/${lookId}.jpg`;
 
                 return (
                   <button
@@ -222,9 +222,9 @@ export default function Header({
                         alt={`Look ${lookNum}`}
                         className="w-full h-full object-cover"
                         onError={(e) => {
-                          // Fail-safe: if image hasn't loaded or isn't present, show a local fallback
+                          // Fail-safe: if image hasn't loaded or isn't present, show a fallback
                           e.currentTarget.onerror = null;
-                          e.currentTarget.src = "/assets/avatar/look-1.jpg";
+                          e.currentTarget.src = "https://lkxxnumhlcdbqknmulmu.supabase.co/storage/v1/object/public/avatars/look-1.jpg";
                         }}
                       />
                       {isSelected && (

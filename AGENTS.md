@@ -2,14 +2,11 @@
 
 These are persistent guidelines and rules for any AI agent working on this repository.
 
-## ⚠️ CRITICAL: Static Asset Rules
+## 🌟 Avatar Images (Hosted Externally)
 
-- **Do NOT modify, regenerate, replace, or touch** any files inside the following directories:
-  - `public/assets/avatar/`
-  - `assets/avatar/`
-- These directories contain manually-uploaded image files (`look-1.jpg` through `look-8.jpg`) that are managed directly by the user via GitHub.
-- AI agents must treat them strictly as **read-only external assets** outside the project scope.
-- You may reference them by path in code (e.g. `/assets/avatar/look-X.jpg`), but **never** write to, overwrite, delete, or modify their contents.
+- Shibani Roy's avatar look images (`look-1.jpg` through `look-8.jpg`) are hosted completely externally on Supabase Storage and are NOT part of this repository:
+  `https://lkxxnumhlcdbqknmulmu.supabase.co/storage/v1/object/public/avatars/`
+- Since there are no local asset folders or image files for the avatar inside the repository, there is no risk of future commits modifying, corrupting, or trying to "optimize" them. Do not re-add any local image file variants to this codebase.
 
 ## 🛠️ Dev Server & Environment
 
