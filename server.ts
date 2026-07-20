@@ -198,6 +198,7 @@ Language & Multilingual Guidelines:
 
 Real-Time Information & Web Search Guidelines:
 - You have full access to real-time information retrieval and web search tools (getWeather, getLatestNews, searchWeb).
+- The 'searchWeb' tool now returns exceptionally high-quality, structured search results powered by Google (including direct answer boxes, sports widgets, live cricket scores, match schedules, current events, and knowledge graph data). Use it confidently to get extremely accurate and up-to-the-minute details!
 - Whenever a user asks for information that requires current/live data (such as the current date/time, recent/live sports/cricket scores, match schedules, weather forecast, breaking news, stock prices, or anything else requiring real-time facts), you MUST use the appropriate tool (e.g. searchWeb, getWeather, or getLatestNews) before answering.
 - Always search first. Never guess, assume, or invent current or live information. Present the current, accurate, and real-time facts according to what you retrieved.
 
@@ -578,9 +579,108 @@ async function getLatestNews(category: string): Promise<any> {
 }
 
 /**
- * Web Search Scraper using DuckDuckGo to answer real-time queries
+ * Web Search using Serper.dev (Google Search) with robust DuckDuckGo scraper fallback
  */
 async function searchWeb(query: string): Promise<any> {
+  const apiKey = process.env.SERPER_API_KEY;
+  if (apiKey) {
+    try {
+      console.log(`[SearchWeb] Using Serper.dev API for query: "${query}"`);
+      const response = await fetch("https://google.serper.dev/search", {
+        method: "POST",
+        headers: {
+          "X-API-KEY": apiKey,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ q: query })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const results: any[] = [];
+
+        // 1. Direct Answer Box (Google Answer Box)
+        if (data.answerBox) {
+          const ab = data.answerBox;
+          const snippet = ab.answer || ab.snippet || ab.title || "";
+          if (snippet) {
+            results.push({
+              title: "Direct Answer (Google Answer Box)",
+              snippet: snippet,
+              link: ab.link || "https://google.com"
+            });
+          }
+        }
+
+        // 2. Knowledge Graph (highly structured facts)
+        if (data.knowledgeGraph) {
+          const kg = data.knowledgeGraph;
+          const title = kg.title || "Knowledge Graph";
+          let snippet = kg.description || "";
+          if (kg.attributes && typeof kg.attributes === "object") {
+            const attrs = Object.entries(kg.attributes)
+              .map(([k, v]) => `${k}: ${v}`)
+              .join(" | ");
+            if (attrs) {
+              snippet = snippet ? `${snippet} (Details: ${attrs})` : attrs;
+            }
+          }
+          if (snippet) {
+            results.push({
+              title: `${title} (Google Knowledge Graph)`,
+              snippet: snippet,
+              link: kg.link || "https://google.com"
+            });
+          }
+        }
+
+        // 3. Sports Results (cricket match scores, tournament states, schedules)
+        if (data.sportsResults) {
+          const sr = data.sportsResults;
+          const title = sr.title || "Sports Result";
+          const matchState = sr.matchState || sr.game || "";
+          const score = sr.score || "";
+          let snippet = "";
+          if (matchState || score) {
+            snippet = `${matchState} ${score}`.trim();
+          }
+          if (sr.source) {
+            snippet += ` (Source: ${sr.source})`;
+          }
+          if (snippet) {
+            results.push({
+              title: `${title}`,
+              snippet: snippet,
+              link: sr.link || "https://google.com"
+            });
+          }
+        }
+
+        // 4. Organic Search Results
+        if (data.organic && Array.isArray(data.organic)) {
+          for (const item of data.organic.slice(0, 5)) {
+            results.push({
+              title: item.title || "Search Result",
+              snippet: item.snippet || "",
+              link: item.link || ""
+            });
+          }
+        }
+
+        if (results.length > 0) {
+          return { success: true, query, results };
+        }
+      } else {
+        console.warn(`[SearchWeb] Serper API error status: ${response.status}. Falling back to DuckDuckGo...`);
+      }
+    } catch (err: any) {
+      console.warn("[SearchWeb] Serper search failed, falling back to DuckDuckGo:", err);
+    }
+  } else {
+    console.warn("[SearchWeb] SERPER_API_KEY is not configured. Using DuckDuckGo scraping fallback.");
+  }
+
+  // --- DuckDuckGo HTML scraping fallback ---
   try {
     const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
     const res = await fetch(url, {
