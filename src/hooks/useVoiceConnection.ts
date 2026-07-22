@@ -332,10 +332,36 @@ export function useVoiceConnection({
         }).catch(() => {});
       }
 
-      // Request microphone permissions targeting ideal system default device
+      let resolvedMicId: string | undefined = undefined;
+
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioInputs = devices.filter(d => d.kind === "audioinput");
+        console.log("[AudioEngine] Available mic devices:", audioInputs.map(d => `${d.label} (${d.deviceId})`));
+
+        const builtInMic = audioInputs.find(d => {
+          const label = d.label.toLowerCase();
+          return !label.includes("bluetooth") &&
+                 !label.includes("headset") &&
+                 !label.includes("handsfree") &&
+                 !label.includes("hfp") &&
+                 !label.includes("sco") &&
+                 (label.includes("built-in") || label.includes("default") || label.includes("internal") || d.deviceId === "default");
+        });
+
+        if (builtInMic) {
+          resolvedMicId = builtInMic.deviceId;
+          console.log("[AudioEngine] Auto-selected built-in mic:", builtInMic.label);
+        } else {
+          console.warn("[AudioEngine] Could not auto-detect built-in mic, falling back to system default");
+        }
+      } catch (err) {
+        console.warn("[AudioEngine] Device enumeration failed, using system default mic:", err);
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          deviceId: { ideal: "default" },
+          deviceId: resolvedMicId ? { exact: resolvedMicId } : { ideal: "default" },
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
