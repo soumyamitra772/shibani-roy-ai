@@ -40,6 +40,7 @@ export default function App() {
 
   // Avatar system state
   const [avatarPreference, setAvatarPreference] = useState<string>("auto");
+  const [selectedMicId, setSelectedMicId] = useState<string>("");
 
   // Sync avatar preference to DB / LocalStorage when session changes
   useEffect(() => {
@@ -226,6 +227,7 @@ export default function App() {
     toggleMute,
     stopPlayback,
   } = useVoiceConnection({
+    selectedMicId,
     onToolCallExecuting: (name, args) => {
       if (name === "generateImage") {
         setIsVoiceGeneratingImage(true);
@@ -625,6 +627,7 @@ export default function App() {
                         theme={theme}
                         isGeneratingImage={isVoiceGeneratingImage}
                         avatarUrl={activeAvatarUrl}
+                        onMicChange={setSelectedMicId}
                       />
                     </div>
 

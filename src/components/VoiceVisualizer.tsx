@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Mic, MicOff, PhoneOff, Radio, Sparkles, Camera } from "lucide-react";
 import { AssistantState } from "../types";
@@ -19,6 +19,7 @@ interface VoiceVisualizerProps {
   theme: ThemeId;
   isGeneratingImage?: boolean;
   avatarUrl: string;
+  onMicChange?: (deviceId: string) => void;
 }
 
 export default function VoiceVisualizer({
@@ -31,8 +32,22 @@ export default function VoiceVisualizer({
   theme,
   isGeneratingImage = false,
   avatarUrl,
+  onMicChange,
 }: VoiceVisualizerProps) {
   const [bars, setBars] = useState<number[]>(Array(24).fill(10));
+  const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedMicId, setSelectedMicId] = useState<string>("");
+
+  const refreshMics = useCallback(async () => {
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
+      s.getTracks().forEach(t => t.stop());
+      const all = await navigator.mediaDevices.enumerateDevices();
+      setMicDevices(all.filter(d => d.kind === "audioinput"));
+    } catch (e) {}
+  }, []);
+
+  useEffect(() => { refreshMics(); }, [refreshMics]);
 
   // Update visualizer equalizer bars based on audio volumes and active state
   useEffect(() => {
@@ -295,6 +310,39 @@ export default function VoiceVisualizer({
           />
         ))}
       </div>
+
+      {state === "disconnected" && (
+        <div className="flex flex-col gap-1 w-full max-w-xs mx-auto mb-3">
+          <label className="text-xs text-neutral-400 font-medium">Microphone</label>
+          <div className="flex gap-2">
+            <select
+              value={selectedMicId}
+              onChange={e => {
+                setSelectedMicId(e.target.value);
+                onMicChange?.(e.target.value);
+              }}
+              className="flex-1 bg-neutral-900 border border-neutral-700 text-white text-sm rounded-lg px-3 py-2 focus:outline-none"
+            >
+              <option value="">Auto-detect (recommended)</option>
+              {micDevices.map((d, i) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label || `Microphone ${i + 1}`}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={refreshMics}
+              title="Refresh mic list"
+              className="px-3 py-2 text-neutral-400 hover:text-white border border-neutral-700 bg-neutral-900 rounded-lg"
+            >
+              ↺
+            </button>
+          </div>
+          <p className="text-[10px] text-neutral-500">
+            Using a Bluetooth speaker? Select your phone's built-in mic to fix audio.
+          </p>
+        </div>
+      )}
 
       {/* Controller Buttons Tray */}
       <div id="controls-tray" className="flex items-center gap-4 w-full justify-center pt-2">

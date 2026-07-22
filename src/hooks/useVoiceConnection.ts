@@ -1,6 +1,8 @@
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
+ * 
+ * Includes Bluetooth microphone selection & built-in mic auto-detection for Android.
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -14,6 +16,7 @@ interface UseVoiceConnectionProps {
   onAssistantSpokeText?: (text: string) => void;
   onToolCallExecuting?: (name: string, args: any) => void;
   onToolCallCompleted?: (name: string, result: any) => void;
+  selectedMicId?: string;
 }
 
 export function useVoiceConnection({
@@ -21,6 +24,7 @@ export function useVoiceConnection({
   onAssistantSpokeText,
   onToolCallExecuting,
   onToolCallCompleted,
+  selectedMicId,
 }: UseVoiceConnectionProps = {}) {
   const [state, setState] = useState<AssistantState>("disconnected");
   const [isMuted, setIsMuted] = useState(false);
@@ -361,7 +365,7 @@ export function useVoiceConnection({
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          deviceId: resolvedMicId ? { exact: resolvedMicId } : { ideal: "default" },
+          deviceId: selectedMicId ? { exact: selectedMicId } : resolvedMicId ? { exact: resolvedMicId } : { ideal: "default" },
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
