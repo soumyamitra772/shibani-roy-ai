@@ -282,6 +282,8 @@ export function useVoiceConnection({
       outAnalyser.connect(outGain);
 
       // Create a standard HTML <audio> element, append to the DOM, and route output stream through it for Bluetooth device routing support
+      outGain.connect(outCtx.destination);
+
       const dest = outCtx.createMediaStreamDestination();
       outGain.connect(dest);
  
