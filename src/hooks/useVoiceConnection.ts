@@ -297,7 +297,27 @@ export function useVoiceConnection({
       document.body.appendChild(audioEl);
       audioEl.srcObject = dest.stream;
       outputAudioRef.current = audioEl;
- 
+
+      if (typeof (audioEl as any).setSinkId === 'function') {
+        try {
+          await (audioEl as any).setSinkId('default');
+          console.log('[AudioEngine] setSinkId set to default successfully');
+        } catch (err) {
+          console.warn('[AudioEngine] setSinkId failed:', err);
+        }
+      }
+
+      navigator.mediaDevices.addEventListener('devicechange', async () => {
+        if (outputAudioRef.current && typeof (outputAudioRef.current as any).setSinkId === 'function') {
+          try {
+            await (outputAudioRef.current as any).setSinkId('default');
+            console.log('[AudioEngine] Re-synced sinkId after device change');
+          } catch (err) {
+            console.warn('[AudioEngine] Could not re-sync sinkId:', err);
+          }
+        }
+      });
+
       audioEl.play().catch((err) => {
         console.warn("[AudioEngine] Error playing programmatic HTML5 audio element:", err);
       });
