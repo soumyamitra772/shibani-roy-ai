@@ -11,6 +11,7 @@ import { WebSocketServer } from "ws";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Modality, Type } from "@google/genai";
 import { createClient } from "@supabase/supabase-js";
+import { handleTelegramWebhook } from "./telegram";
 
 dotenv.config();
 
@@ -864,6 +865,11 @@ async function startServer() {
     legacyHeaders: false,
     message: { error: "Too many login attempts. Please wait 15 minutes before requesting another magic link." },
     statusCode: 429,
+  });
+
+  // Telegram Webhook Endpoint
+  app.post("/telegram/webhook", async (req, res) => {
+    await handleTelegramWebhook(req, res, ai, supabase, () => getSystemInstruction([]));
   });
 
   app.use("/api/", apiLimiter);
