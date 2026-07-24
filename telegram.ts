@@ -483,7 +483,7 @@ export async function handleTelegramWebhook(
 
     // 4. Send messages + Shibani system prompt to Gemini
     const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite",
+      model: "gemini-3.6-flash",
       contents: sanitizedContents,
       config: {
         systemInstruction,
