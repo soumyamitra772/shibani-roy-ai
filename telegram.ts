@@ -44,6 +44,124 @@ interface TelegramHistoryItem {
 // In-memory fallback if Supabase is not configured or table is missing
 const inMemoryTelegramHistory = new Map<string, TelegramHistoryItem[]>();
 
+// In-memory rate limiter per-minute tracker: Map<telegram_user_id, timestamp[]>
+const userMinuteTracker = new Map<string, number[]>();
+
+// In-memory daily usage fallback tracker: Map<telegram_user_id, { date: string; count: number }>
+const inMemoryDailyUsage = new Map<string, { date: string; count: number }>();
+
+/**
+ * Check and enforce per-minute rate limit (max 10 messages per minute per user)
+ */
+function checkPerMinuteRateLimit(telegramUserId: string): boolean {
+  const now = Date.now();
+  const windowMs = 60 * 1000; // 1 minute
+  const maxPerMinute = 10;
+
+  const timestamps = (userMinuteTracker.get(telegramUserId) || []).filter((ts) => now - ts < windowMs);
+
+  if (timestamps.length >= maxPerMinute) {
+    return false; // Exceeded
+  }
+
+  timestamps.push(now);
+  userMinuteTracker.set(telegramUserId, timestamps);
+  return true; // Allowed
+}
+
+/**
+ * Check daily rate limit (max 50 messages per day per user) using telegram_usage table
+ */
+async function checkDailyRateLimit(supabase: SupabaseClient | null, telegramUserId: string, today: string): Promise<boolean> {
+  const maxPerDay = 50;
+
+  // 1. Check in-memory fallback count first
+  const mem = inMemoryDailyUsage.get(telegramUserId);
+  if (mem && mem.date === today && mem.count >= maxPerDay) {
+    return false; // Exceeded
+  }
+
+  // 2. Check Supabase table telegram_usage
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from("telegram_usage")
+        .select("*")
+        .eq("telegram_user_id", telegramUserId)
+        .eq("date", today)
+        .maybeSingle();
+
+      if (error) {
+        if (error.code === "42P01") {
+          console.warn(
+            "[Telegram Bot] Table 'telegram_usage' does not exist in Supabase yet. Please run this SQL in your Supabase SQL editor:\n" +
+              "CREATE TABLE telegram_usage (id SERIAL PRIMARY KEY, telegram_user_id TEXT, date TEXT, count INT DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW());"
+          );
+        } else {
+          console.warn("[Telegram Bot] Supabase telegram_usage select error:", error.message || error);
+        }
+      } else if (data) {
+        const count = data.count !== undefined ? data.count : (data.message_count !== undefined ? data.message_count : 0);
+        if (count >= maxPerDay) {
+          return false; // Exceeded
+        }
+      }
+    } catch (err) {
+      console.warn("[Telegram Bot] Error checking telegram_usage in Supabase:", err);
+    }
+  }
+
+  return true; // Allowed
+}
+
+/**
+ * Increment daily message count in telegram_usage table and in-memory tracker
+ */
+async function incrementDailyUsage(supabase: SupabaseClient | null, telegramUserId: string, today: string) {
+  // Update in-memory tracker
+  const mem = inMemoryDailyUsage.get(telegramUserId);
+  if (!mem || mem.date !== today) {
+    inMemoryDailyUsage.set(telegramUserId, { date: today, count: 1 });
+  } else {
+    mem.count += 1;
+  }
+
+  // Update Supabase telegram_usage table
+  if (supabase) {
+    try {
+      const { data, error } = await supabase
+        .from("telegram_usage")
+        .select("id, count")
+        .eq("telegram_user_id", telegramUserId)
+        .eq("date", today)
+        .maybeSingle();
+
+      if (error) {
+        if (error.code === "42P01") {
+          // Table doesn't exist yet, already logged warning
+          return;
+        }
+        console.warn("[Telegram Bot] Select telegram_usage error:", error.message || error);
+        return;
+      }
+
+      if (data) {
+        const currentCount = data.count || 0;
+        await supabase
+          .from("telegram_usage")
+          .update({ count: currentCount + 1 })
+          .eq("id", data.id);
+      } else {
+        await supabase
+          .from("telegram_usage")
+          .insert([{ telegram_user_id: telegramUserId, date: today, count: 1 }]);
+      }
+    } catch (err) {
+      console.warn("[Telegram Bot] Exception updating telegram_usage:", err);
+    }
+  }
+}
+
 /**
  * Send typing action or other chat status to Telegram Chat via Telegram Bot API
  */
@@ -263,6 +381,16 @@ export async function handleTelegramWebhook(
     return;
   }
 
+  // Reject any message longer than 2000 characters before calling Gemini
+  if (text.length > 2000) {
+    await sendTelegramMessage(
+      botToken,
+      chatId,
+      "⚠️ Your message is too long (maximum 2000 characters). Please send a shorter message."
+    );
+    return;
+  }
+
   // Handle Telegram Commands
   if (text === "/start") {
     const welcomeText = "Hey there! I'm Shibani Roy, your virtual friend and AI companion. 😊 Great to connect with you on Telegram! How are you doing today?";
@@ -286,6 +414,28 @@ export async function handleTelegramWebhook(
     await clearTelegramHistory(supabase, telegramUserId);
     const clearText = "Your chat history has been cleared! Let me know what's on your mind today. 😊";
     await sendTelegramMessage(botToken, chatId, clearText);
+    return;
+  }
+
+  // Enforce per-minute rate limit (10 messages per minute per telegram_user_id)
+  if (!checkPerMinuteRateLimit(telegramUserId)) {
+    await sendTelegramMessage(
+      botToken,
+      chatId,
+      "⚠️ You're sending messages too quickly. Please wait a minute and try again."
+    );
+    return;
+  }
+
+  // Enforce daily rate limit (50 messages per day per telegram_user_id)
+  const today = new Date().toISOString().split("T")[0];
+  const isDailyAllowed = await checkDailyRateLimit(supabase, telegramUserId, today);
+  if (!isDailyAllowed) {
+    await sendTelegramMessage(
+      botToken,
+      chatId,
+      "💕 You've reached today's free limit of 50 messages. Please come back tomorrow to continue chatting with me."
+    );
     return;
   }
 
@@ -342,6 +492,9 @@ export async function handleTelegramWebhook(
     });
 
     const replyText = response.text ? response.text.trim() : "I'm right here! What's on your mind today? 😊";
+
+    // Increment daily usage count only after successful Gemini response
+    await incrementDailyUsage(supabase, telegramUserId, today);
 
     // 5. Save user message & Shibani reply to telegram_chat_history
     await saveTelegramMessage(supabase, telegramUserId, "user", text);
