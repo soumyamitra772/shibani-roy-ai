@@ -510,6 +510,14 @@ export async function handleTelegramWebhook(
       },
     });
 
+    console.log("===== RAW GEMINI RESPONSE =====");
+    console.dir(response, { depth: null });
+    console.log("===============================");
+
+    console.log("===== RESPONSE.TEXT =====");
+    console.log(response.text);
+    console.log("=========================");
+
     console.log("[Telegram Bot] Gemini response received successfully.");
 
     const replyText = response.text ? response.text.trim() : "I'm right here! What's on your mind today? 😊";
