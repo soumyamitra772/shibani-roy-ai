@@ -358,6 +358,15 @@ export async function handleTelegramWebhook(
   }
 
   const update: TelegramUpdate = req.body;
+  console.log("========================================");
+  console.log("[WEBHOOK RECEIVED]");
+  console.log("Time:", new Date().toISOString());
+  console.log("Update ID:", update.update_id);
+  console.log("Message ID:", update.message?.message_id);
+  console.log("Chat ID:", update.message?.chat?.id);
+  console.log("Telegram User ID:", update.message?.from?.id);
+  console.log("Text:", update.message?.text);
+  console.log("========================================");
   const msg = update?.message || update?.edited_message;
 
   // Always return HTTP 200 OK immediately so Telegram webhook does not retry
