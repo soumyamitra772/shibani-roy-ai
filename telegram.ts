@@ -482,6 +482,16 @@ export async function handleTelegramWebhook(
     await sendChatAction(botToken, chatId, "typing");
 
     // 4. Send messages + Shibani system prompt to Gemini
+    console.log("========================================");
+    console.log("[Telegram Bot] GEMINI REQUEST");
+    console.log("Time:", new Date().toISOString());
+    console.log("Telegram User ID:", telegramUserId);
+    console.log("Chat ID:", chatId);
+    console.log("Message:", text);
+    console.log("Model:", "gemini-3.6-flash");
+    console.log("History Length:", sanitizedContents.length);
+    console.log("========================================");
+
     const response = await ai.models.generateContent({
       model: "gemini-3.6-flash",
       contents: sanitizedContents,
@@ -490,6 +500,8 @@ export async function handleTelegramWebhook(
         temperature: 0.85,
       },
     });
+
+    console.log("[Telegram Bot] Gemini response received successfully.");
 
     const replyText = response.text ? response.text.trim() : "I'm right here! What's on your mind today? 😊";
 
@@ -507,7 +519,17 @@ export async function handleTelegramWebhook(
     await sendTelegramMessage(botToken, chatId, replyText);
 
   } catch (err: any) {
-    console.error("[Telegram Bot] Error processing message:", err);
+    console.error("========================================");
+    console.error("[Telegram Bot] GEMINI ERROR");
+    console.error("Time:", new Date().toISOString());
+    console.error("Telegram User ID:", telegramUserId);
+    console.error("Chat ID:", chatId);
+    console.error("Message:", text);
+    console.error("Error:", err);
+    console.error("Message:", err?.message);
+    console.error("Status:", err?.status);
+    console.error("Stack:", err?.stack);
+    console.error("========================================");
     await sendTelegramMessage(
       botToken,
       chatId,
