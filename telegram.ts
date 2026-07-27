@@ -676,6 +676,37 @@ export async function handleTelegramWebhook(
     console.log(`Estimated Tokens: ${totalTokens}`);
     console.log("----------------------------------------");
 
+    const sysFirst300 = systemInstruction.slice(0, 300);
+    const sysLast300 = systemInstruction.slice(-300);
+    const historyCharCount = history.reduce((acc, item) => acc + (item.message?.length || 0), 0);
+    const finalContentChars = sanitizedContents.reduce((acc, turn) => acc + (turn.parts?.[0]?.text?.length || 0), 0);
+
+    console.log("========================================");
+    console.log("");
+    console.log("SYSTEM INSTRUCTION");
+    console.log(`Character Count: ${systemInstruction.length}`);
+    console.log(`First 300 characters: ${sysFirst300}`);
+    console.log(`Last 300 characters: ${sysLast300}`);
+    console.log("");
+    console.log("----------------------------------------");
+    console.log("");
+    console.log("CHAT HISTORY");
+    console.log(`Character Count: ${historyCharCount}`);
+    console.log(`Number of Messages: ${historyMessageCount}`);
+    console.log("");
+    console.log("----------------------------------------");
+    console.log("");
+    console.log("CURRENT USER MESSAGE");
+    console.log(`Character Count: ${text.length}`);
+    console.log(`Content: ${text}`);
+    console.log("");
+    console.log("----------------------------------------");
+    console.log("");
+    console.log("FINAL CONTENT SENT TO GEMINI");
+    console.log(`Character Count: ${finalContentChars}`);
+    console.log("");
+    console.log("========================================");
+
     const response = await ai.models.generateContent({
       model: "gemini-3.6-flash",
       contents: sanitizedContents,
