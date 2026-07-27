@@ -199,7 +199,7 @@ Fully multilingual: English, Hindi, Bengali, Hinglish, Banglish. Auto-detect the
 - In voice mode, say a natural filler ("Sending you a picture now!") while the image generates.
 
 ## TOOLS AVAILABLE
-openWebsite, searchGoogle, openYouTube, openMaps, copyToClipboard, getWeather, getLatestNews, searchWeb, rememberFact, recallFacts, recommendSongByMood, generateImage, playMusic, controlMusic`;
+openWebsite, searchGoogle, openYouTube, openMaps, copyToClipboard, getWeather, getLatestNews, searchWeb, rememberFact, recallFacts, recommendSongByMood, generateImage, playMusic`;
 
 function getSystemInstruction(memoriesList: MemoryItem[] = []): string {
   const now = new Date();
@@ -917,14 +917,17 @@ async function startServer() {
   };
 
   // Admin bypass configuration
-  const ADMIN_USER_IDS = ["08fb4010-e3f6-4618-9bed-74fe79403af8"];
+  const ADMIN_USER_IDS = (process.env.ADMIN_USER_IDS || "")
+    .split(",")
+    .map(id => id.trim())
+    .filter(Boolean);
 
   function isAdmin(userId: string): boolean {
     return ADMIN_USER_IDS.includes(userId);
   }
 
   // Helper for daily usage limits
-  const inMemoryUsage = new Map<string, { images_generated: number; tool_calls: number; voice_minutes: number }>();
+  const inMemoryUsage = new Map<string, { images_generated: number; tool_calls: number; voice_minutes: number; chat_messages: number }>();
 
   function getKolkataDateString(): string {
     const now = new Date();
@@ -933,7 +936,7 @@ async function startServer() {
 
   async function checkAndIncrementUsage(
     userId: string,
-    type: "image" | "tool"
+    type: "image" | "tool" | "chat"
   ): Promise<{ allowed: boolean; message: string }> {
     if (isAdmin(userId)) {
       return { allowed: true, message: "OK" };
@@ -945,20 +948,21 @@ async function startServer() {
     let currentImages = 0;
     let currentTools = 0;
     let currentVoice = 0;
+    let currentChat = 0;
     let dbRecordFound = false;
 
     if (supabase) {
       try {
         const { data, error } = await supabase
           .from("user_usage")
-          .select("images_generated, tool_calls, voice_minutes")
+          .select("images_generated, tool_calls, voice_minutes, chat_messages")
           .eq("user_id", userId)
           .eq("date", today)
           .maybeSingle();
 
         if (error) {
           if (error.code === "42P01") {
-            console.warn("Supabase 'user_usage' table does not exist. Please create it: CREATE TABLE user_usage (user_id TEXT, date TEXT, images_generated INT DEFAULT 0, voice_minutes INT DEFAULT 0, tool_calls INT DEFAULT 0, updated_at TIMESTAMPTZ, PRIMARY KEY (user_id, date));. Using in-memory fallback.");
+            console.warn("Supabase 'user_usage' table does not exist. Please create it: CREATE TABLE user_usage (user_id TEXT, date TEXT, images_generated INT DEFAULT 0, voice_minutes INT DEFAULT 0, tool_calls INT DEFAULT 0, chat_messages INT DEFAULT 0, updated_at TIMESTAMPTZ, PRIMARY KEY (user_id, date));. Using in-memory fallback.");
           } else {
             console.warn("user_usage select warning:", error.message || error);
           }
@@ -967,6 +971,7 @@ async function startServer() {
           currentImages = Number(data.images_generated) || 0;
           currentTools = Number(data.tool_calls) || 0;
           currentVoice = Number(data.voice_minutes) || 0;
+          currentChat = Number(data.chat_messages) || 0;
         }
       } catch (err) {
         console.warn("Error reading user_usage from Supabase:", err);
@@ -978,6 +983,7 @@ async function startServer() {
       currentImages = mem.images_generated;
       currentTools = mem.tool_calls;
       currentVoice = mem.voice_minutes;
+      currentChat = mem.chat_messages || 0;
     }
 
     // Free limits check
@@ -997,15 +1003,25 @@ async function startServer() {
           message: "Daily free limit reached. Upgrade coming soon!",
         };
       }
+    } else if (type === "chat") {
+      const CHAT_LIMIT = 50;
+      if (currentChat >= CHAT_LIMIT) {
+        return {
+          allowed: false,
+          message: "Daily free limit reached. Upgrade coming soon!",
+        };
+      }
     }
 
     const newImages = type === "image" ? currentImages + 1 : currentImages;
     const newTools = type === "tool" ? currentTools + 1 : currentTools;
+    const newChat = type === "chat" ? currentChat + 1 : currentChat;
 
     inMemoryUsage.set(key, {
       images_generated: newImages,
       tool_calls: newTools,
       voice_minutes: currentVoice,
+      chat_messages: newChat,
     });
 
     if (supabase) {
@@ -1019,6 +1035,7 @@ async function startServer() {
               images_generated: newImages,
               tool_calls: newTools,
               voice_minutes: currentVoice,
+              chat_messages: newChat,
               updated_at: new Date().toISOString(),
             },
             { onConflict: "user_id,date" }
@@ -1043,29 +1060,14 @@ async function startServer() {
   app.use("/api/", apiLimiter);
 
   // REST API Route for standard Chat Mode with streaming support
-  app.post("/api/chat", async (req, res) => {
-    // Auth protection
-    const authHeader = req.headers.authorization;
-    const token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null;
-    let verifiedUserId = req.body.userId;
-
-    if (supabase) {
-      if (!token) {
-        return res.status(401).json({ error: "Unauthorized: Missing authentication token." });
-      }
-      try {
-        const { data: { user }, error } = await supabase.auth.getUser(token);
-        if (error || !user) {
-          return res.status(401).json({ error: "Unauthorized: Invalid or expired session." });
-        }
-        verifiedUserId = user.id;
-      } catch (err: any) {
-        return res.status(401).json({ error: `Unauthorized: ${err.message}` });
-      }
-    }
-
+  app.post("/api/chat", requireAuth, async (req, res) => {
     const { messages } = req.body;
-    const userId = verifiedUserId;
+    const userId = (req as any).userId;
+
+    const usage = await checkAndIncrementUsage(userId, "chat");
+    if (!usage.allowed) {
+      return res.status(429).json({ error: usage.message });
+    }
 
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "Invalid messages array" });
@@ -1561,120 +1563,140 @@ async function startServer() {
   // Setup WebSocket Server for Gemini Live API
   const wss = new WebSocketServer({ server, path: "/api/live-ws" });
 
-  wss.on("connection", async (clientWs, req) => {
+  wss.on("connection", (clientWs) => {
     console.log("Client connected to Live WS proxy");
     let session: any = null;
+    let isAuthenticated = false;
+    let userId = "anonymous-user";
 
-    try {
-      // Parse query params to extract userId and token
-      const urlObj = new URL(req.url || "", `http://${req.headers?.host || "localhost"}`);
-      let userId = urlObj.searchParams.get("userId") || "anonymous-user";
-      const token = urlObj.searchParams.get("token");
-
-      if (supabase) {
-        if (!token) {
-          clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Missing authentication token." }));
-          clientWs.close();
-          return;
-        }
-        const { data: { user }, error } = await supabase.auth.getUser(token);
-        if (error || !user) {
-          clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Invalid or expired session." }));
-          clientWs.close();
-          return;
-        }
-        userId = user.id;
+    const authTimeout = setTimeout(() => {
+      if (!isAuthenticated) {
+        clientWs.send(JSON.stringify({ type: "error", message: "Authentication timeout." }));
+        clientWs.close();
       }
-      
-      const memories = await recallFactsFromDb(userId);
-      const systemInstruction = getSystemInstruction(memories);
+    }, 10000);
 
-      session = await ai.live.connect({
-        model: "gemini-3.1-flash-live-preview",
-        config: {
-          responseModalities: [Modality.AUDIO],
-          speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } }, // Aoede (Female) matches Shibani
-          },
-          systemInstruction: systemInstruction,
-          tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }]
-        },
-        callbacks: {
-          onmessage: (message: any) => {
-            // Forward audio to the client
-            const audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-            if (audio) {
-              clientWs.send(JSON.stringify({ type: "audio", data: audio }));
-            }
-
-            // Forward interruption signal
-            if (message.serverContent?.interrupted) {
-              clientWs.send(JSON.stringify({ type: "interrupted" }));
-            }
-
-            // Forward tool calls with all properties preserved (including thought_signature)
-            const functionCalls = message.toolCall?.functionCalls;
-            if (functionCalls && functionCalls.length > 0) {
-              for (const call of functionCalls) {
-                const thought_sig = call.thought_signature || call.thoughtSignature || (call as any).thought_signature || (call as any).thoughtSignature;
-                clientWs.send(JSON.stringify({
-                  type: "toolCall",
-                  toolCall: {
-                    ...call,
-                    id: call.id,
-                    name: call.name,
-                    args: call.args,
-                    thought_signature: thought_sig,
-                    thoughtSignature: thought_sig
-                  }
-                }));
-              }
-            }
-          },
-          onclose: () => {
-            console.log("Gemini Live API session closed");
-            clientWs.send(JSON.stringify({ type: "disconnected" }));
-            clientWs.close();
-          },
-          onerror: (err: any) => {
-            console.error("Gemini Live API error:", err);
-            Sentry.captureException(err, { tags: { feature: "voice" } });
-            clientWs.send(JSON.stringify({ type: "error", message: err.message || "Gemini Live session error" }));
-          }
-        }
-      });
-
-      console.log("Gemini Live API connected and proxying");
-      clientWs.send(JSON.stringify({ type: "connected" }));
-
-    } catch (error: any) {
-      console.error("Failed to connect to Gemini Live:", error);
-      Sentry.captureException(error, { tags: { feature: "voice" } });
-      clientWs.send(JSON.stringify({ type: "error", message: error.message || "Failed to establish Gemini Live session" }));
-      clientWs.close();
-      return;
-    }
-
-    clientWs.on("message", (rawData) => {
+    clientWs.on("message", async (rawData) => {
       try {
         const msg = JSON.parse(rawData.toString());
-        if (msg.type === "audio" && msg.data) {
-          if (session) {
-            session.sendRealtimeInput({
-              audio: { data: msg.data, mimeType: "audio/pcm;rate=16000" }
-            });
-          }
-        } else if (msg.type === "toolResponse" && msg.toolResponse) {
-          if (session) {
-            session.sendToolResponse({
-              functionResponses: [
-                {
-                  id: msg.toolResponse.id,
-                  name: msg.toolResponse.name, // Forwarding the function name required by SDK validation
-                  response: { output: msg.toolResponse.response }
+
+        if (!isAuthenticated) {
+          if (msg.type === "auth") {
+            clearTimeout(authTimeout);
+            const token = msg.token;
+
+            if (supabase) {
+              if (!token) {
+                clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Missing authentication token." }));
+                clientWs.close();
+                return;
+              }
+              const { data: { user }, error } = await supabase.auth.getUser(token);
+              if (error || !user) {
+                clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Invalid or expired session." }));
+                clientWs.close();
+                return;
+              }
+              userId = user.id;
+            } else if (msg.userId) {
+              userId = msg.userId;
+            }
+
+            isAuthenticated = true;
+
+            try {
+              const memories = await recallFactsFromDb(userId);
+              const systemInstruction = getSystemInstruction(memories);
+
+              session = await ai.live.connect({
+                model: "gemini-3.1-flash-live-preview",
+                config: {
+                  responseModalities: [Modality.AUDIO],
+                  speechConfig: {
+                    voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } }, // Aoede (Female) matches Shibani
+                  },
+                  systemInstruction: systemInstruction,
+                  tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }]
+                },
+                callbacks: {
+                  onmessage: (message: any) => {
+                    // Forward audio to the client
+                    const audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
+                    if (audio) {
+                      clientWs.send(JSON.stringify({ type: "audio", data: audio }));
+                    }
+
+                    // Forward interruption signal
+                    if (message.serverContent?.interrupted) {
+                      clientWs.send(JSON.stringify({ type: "interrupted" }));
+                    }
+
+                    // Forward tool calls with all properties preserved (including thought_signature)
+                    const functionCalls = message.toolCall?.functionCalls;
+                    if (functionCalls && functionCalls.length > 0) {
+                      for (const call of functionCalls) {
+                        const thought_sig = call.thought_signature || call.thoughtSignature || (call as any).thought_signature || (call as any).thoughtSignature;
+                        clientWs.send(JSON.stringify({
+                          type: "toolCall",
+                          toolCall: {
+                            ...call,
+                            id: call.id,
+                            name: call.name,
+                            args: call.args,
+                            thought_signature: thought_sig,
+                            thoughtSignature: thought_sig
+                          }
+                        }));
+                      }
+                    }
+                  },
+                  onclose: () => {
+                    console.log("Gemini Live API session closed");
+                    clientWs.send(JSON.stringify({ type: "disconnected" }));
+                    clientWs.close();
+                  },
+                  onerror: (err: any) => {
+                    console.error("Gemini Live API error:", err);
+                    Sentry.captureException(err, { tags: { feature: "voice" } });
+                    clientWs.send(JSON.stringify({ type: "error", message: err.message || "Gemini Live session error" }));
+                  }
                 }
-              ]
-            });
+              });
+
+              console.log("Gemini Live API connected and proxying");
+              clientWs.send(JSON.stringify({ type: "connected" }));
+            } catch (error: any) {
+              console.error("Failed to connect to Gemini Live:", error);
+              Sentry.captureException(error, { tags: { feature: "voice" } });
+              clientWs.send(JSON.stringify({ type: "error", message: error.message || "Failed to establish Gemini Live session" }));
+              clientWs.close();
+              return;
+            }
+          } else {
+            clearTimeout(authTimeout);
+            clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Expected auth handshake as first message." }));
+            clientWs.close();
+            return;
+          }
+        } else {
+          if (msg.type === "audio" && msg.data) {
+            if (session) {
+              session.sendRealtimeInput({
+                audio: { data: msg.data, mimeType: "audio/pcm;rate=16000" }
+              });
+            }
+          } else if (msg.type === "toolResponse" && msg.toolResponse) {
+            if (session) {
+              session.sendToolResponse({
+                functionResponses: [
+                  {
+                    id: msg.toolResponse.id,
+                    name: msg.toolResponse.name, // Forwarding the function name required by SDK validation
+                    response: { output: msg.toolResponse.response }
+                  }
+                ]
+              });
+            }
           }
         }
       } catch (err) {
@@ -1683,6 +1705,7 @@ async function startServer() {
     });
 
     clientWs.on("close", () => {
+      clearTimeout(authTimeout);
       console.log("Client WS closed, cleaning up Gemini Live session");
       if (session) {
         try {

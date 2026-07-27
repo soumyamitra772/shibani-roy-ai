@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS user_usage (
   images_generated INT DEFAULT 0,
   voice_minutes INT DEFAULT 0,
   tool_calls INT DEFAULT 0,
+  chat_messages INT DEFAULT 0,
   updated_at TIMESTAMPTZ DEFAULT NOW(),
   PRIMARY KEY (user_id, date)
 );
@@ -166,5 +167,5 @@ npm start
 
 ## 💡 Pricing & Quota Note
 
-- **Web App**: Free to use with daily limits (**5 image generations** and **30 tool calls** per day).
+- **Web App**: Free to use with daily limits (**50 chat messages**, **5 image generations**, and **30 tool calls** per day).
 - **Telegram Bot**: Available as a free public channel for conversing with Shibani.

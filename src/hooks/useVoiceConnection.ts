@@ -9,7 +9,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { AssistantState, ToolCallPayload } from "../types";
 import { float32ToPcm16Base64, pcm16Base64ToFloat32 } from "../utils/audioUtils";
 import { ToolExecutor } from "../services/ToolExecutor";
-import { getOrCreateUserId, getAuthenticatedToken } from "../utils/userId";
+import { getAuthenticatedToken } from "../utils/userId";
 
 interface UseVoiceConnectionProps {
   onToolCallExecuted?: (message: string) => void;
@@ -398,13 +398,17 @@ export function useVoiceConnection({
 
       // Build WebSocket URL
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const userId = getOrCreateUserId();
       const token = getAuthenticatedToken() || "";
-      const wsUrl = `${protocol}//${window.location.host}/api/live-ws?userId=${encodeURIComponent(userId)}&token=${encodeURIComponent(token)}`;
+      const wsUrl = `${protocol}//${window.location.host}/api/live-ws`;
 
       console.log(`[AudioEngine] Connecting WebSocket: ${wsUrl}`);
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log("[AudioEngine] WebSocket opened, sending auth token");
+        ws.send(JSON.stringify({ type: "auth", token: token }));
+      };
 
       // Configure microphone chunk dispatch
       // Configure microphone chunk dispatch

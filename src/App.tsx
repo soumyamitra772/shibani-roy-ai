@@ -13,7 +13,7 @@ import { useVoiceConnection } from "./hooks/useVoiceConnection";
 import { Message, InteractionMode } from "./types";
 import { ToolExecutor } from "./services/ToolExecutor";
 import { MusicPlayer } from "./components/MusicPlayer";
-import { getOrCreateUserId, setAuthenticatedUser } from "./utils/userId";
+import { setAuthenticatedUser } from "./utils/userId";
 import { ThemeId, THEMES } from "./utils/themes";
 import LoginScreen from "./components/LoginScreen";
 import { supabase } from "./utils/supabaseClient";
@@ -335,8 +335,7 @@ export default function App() {
             ...(token ? { "Authorization": `Bearer ${token}` } : {})
           },
           body: JSON.stringify({
-            userId: getOrCreateUserId(),
-            messages: currentMessages.map(m => ({
+            messages: currentMessages.slice(-40).map(m => ({
               role: m.role,
               content: m.content,
               parts: m.parts,

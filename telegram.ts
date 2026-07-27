@@ -44,29 +44,71 @@ interface TelegramHistoryItem {
 // In-memory fallback if Supabase is not configured or table is missing
 const inMemoryTelegramHistory = new Map<string, TelegramHistoryItem[]>();
 
-// In-memory rate limiter per-minute tracker: Map<telegram_user_id, timestamp[]>
-const userMinuteTracker = new Map<string, number[]>();
-
 // In-memory daily usage fallback tracker: Map<telegram_user_id, { date: string; count: number }>
 const inMemoryDailyUsage = new Map<string, { date: string; count: number }>();
 
 /**
- * Check and enforce per-minute rate limit (max 10 messages per minute per user)
+ * Check and enforce per-minute rate limit (max 10 messages per minute per user) using telegram_usage table
  */
-function checkPerMinuteRateLimit(telegramUserId: string): boolean {
-  const now = Date.now();
-  const windowMs = 60 * 1000; // 1 minute
+async function checkPerMinuteRateLimit(
+  supabase: SupabaseClient | null,
+  telegramUserId: string
+): Promise<boolean> {
   const maxPerMinute = 10;
+  const now = Date.now();
+  const windowMs = 60 * 1000;
 
-  const timestamps = (userMinuteTracker.get(telegramUserId) || []).filter((ts) => now - ts < windowMs);
+  // Fallback: if no Supabase, allow all (can't persist without DB)
+  if (!supabase) return true;
 
-  if (timestamps.length >= maxPerMinute) {
-    return false; // Exceeded
+  try {
+    const today = new Date().toISOString().split("T")[0];
+
+    const { data, error } = await supabase
+      .from("telegram_usage")
+      .select("id, minute_timestamps")
+      .eq("telegram_user_id", telegramUserId)
+      .eq("date", today)
+      .maybeSingle();
+
+    if (error && error.code !== "42P01") {
+      console.warn("[Telegram Bot] checkPerMinuteRateLimit select error:", error.message);
+      return true; // fail open on unexpected errors
+    }
+
+    // Filter timestamps to only those within the last 60 seconds
+    const rawTimestamps: number[] = data?.minute_timestamps || [];
+    const recentTimestamps = rawTimestamps.filter(ts => now - ts < windowMs);
+
+    if (recentTimestamps.length >= maxPerMinute) {
+      return false; // rate limit exceeded
+    }
+
+    // Add current timestamp and persist back
+    const updatedTimestamps = [...recentTimestamps, now];
+
+    if (data?.id) {
+      await supabase
+        .from("telegram_usage")
+        .update({ minute_timestamps: updatedTimestamps })
+        .eq("id", data.id);
+    } else {
+      await supabase
+        .from("telegram_usage")
+        .insert([{
+          telegram_user_id: telegramUserId,
+          date: today,
+          count: 0,
+          minute_timestamps: updatedTimestamps
+        }]);
+    }
+
+    return true; // allowed
+
+  } catch (err) {
+    console.warn("[Telegram Bot] checkPerMinuteRateLimit exception:", err);
+    return true; // fail open
   }
-
-  timestamps.push(now);
-  userMinuteTracker.set(telegramUserId, timestamps);
-  return true; // Allowed
 }
 
 /**
@@ -95,7 +137,8 @@ async function checkDailyRateLimit(supabase: SupabaseClient | null, telegramUser
         if (error.code === "42P01") {
           console.warn(
             "[Telegram Bot] Table 'telegram_usage' does not exist in Supabase yet. Please run this SQL in your Supabase SQL editor:\n" +
-              "CREATE TABLE telegram_usage (id SERIAL PRIMARY KEY, telegram_user_id TEXT, date TEXT, count INT DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW());"
+              "CREATE TABLE telegram_usage (id SERIAL PRIMARY KEY, telegram_user_id TEXT, date TEXT, count INT DEFAULT 0, created_at TIMESTAMPTZ DEFAULT NOW());\n" +
+              "ALTER TABLE telegram_usage ADD COLUMN IF NOT EXISTS minute_timestamps JSONB DEFAULT '[]'::jsonb;"
           );
         } else {
           console.warn("[Telegram Bot] Supabase telegram_usage select error:", error.message || error);
@@ -559,7 +602,7 @@ export async function handleTelegramWebhook(
   }
 
   // Enforce per-minute rate limit (10 messages per minute per telegram_user_id)
-  if (!checkPerMinuteRateLimit(telegramUserId)) {
+  if (!(await checkPerMinuteRateLimit(supabase, telegramUserId))) {
     await sendTelegramMessage(
       botToken,
       chatId,
