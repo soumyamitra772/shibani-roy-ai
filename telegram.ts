@@ -645,6 +645,37 @@ export async function handleTelegramWebhook(
     console.log("Total Prompt Size:", totalPromptSize, "characters");
     console.log("========================================");
 
+    // Calculate prompt composition metrics
+    const sysChars = systemInstruction.length;
+    const sysTokens = Math.ceil(sysChars / 4);
+
+    const historyChars = history.reduce((acc, item) => acc + (item.message?.length || 0), 0);
+    const historyTokens = Math.ceil(historyChars / 4);
+
+    const userMsgChars = text.length;
+    const userMsgTokens = Math.ceil(userMsgChars / 4);
+
+    const totalChars = sysChars + historyChars + userMsgChars;
+    const totalTokens = sysTokens + historyTokens + userMsgTokens;
+
+    console.log("----------------------------------------");
+    console.log("SYSTEM PROMPT");
+    console.log(`Characters: ${sysChars}`);
+    console.log(`Estimated Tokens: ${sysTokens}`);
+    console.log("");
+    console.log("CHAT HISTORY");
+    console.log(`Characters: ${historyChars}`);
+    console.log(`Estimated Tokens: ${historyTokens}`);
+    console.log("");
+    console.log("CURRENT USER MESSAGE");
+    console.log(`Characters: ${userMsgChars}`);
+    console.log(`Estimated Tokens: ${userMsgTokens}`);
+    console.log("");
+    console.log("TOTAL");
+    console.log(`Characters: ${totalChars}`);
+    console.log(`Estimated Tokens: ${totalTokens}`);
+    console.log("----------------------------------------");
+
     const response = await ai.models.generateContent({
       model: "gemini-3.6-flash",
       contents: sanitizedContents,
