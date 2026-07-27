@@ -1,6 +1,8 @@
 import "./instrument";
 import * as Sentry from "@sentry/node";
 import express from "express";
+import helmet from "helmet";
+import cors from "cors";
 import { rateLimit } from "express-rate-limit";
 import http from "http";
 import path from "path";
@@ -830,7 +832,36 @@ async function startServer() {
   const server = http.createServer(app);
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-  app.use(express.json());
+  // Security headers
+  app.use(
+    helmet({
+      contentSecurityPolicy: false,
+      crossOriginEmbedderPolicy: false,
+    })
+  );
+
+  // CORS configuration
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        if (process.env.NODE_ENV !== "production") return callback(null, true);
+        const appUrl = process.env.APP_URL;
+        if (appUrl && (origin === appUrl || origin === appUrl.replace(/\/$/, ""))) {
+          return callback(null, true);
+        }
+        if (origin.includes("localhost") || origin.includes("127.0.0.1")) {
+          return callback(null, true);
+        }
+        return callback(null, false);
+      },
+      credentials: true,
+    })
+  );
+
+  // Payload body limit
+  app.use(express.json({ limit: "1mb" }));
+  app.use(express.urlencoded({ limit: "1mb", extended: true }));
 
   const apiLimiter = rateLimit({
     windowMs: 1 * 60 * 1000, // 1 minute
@@ -858,6 +889,151 @@ async function startServer() {
     message: { error: "Too many login attempts. Please wait 15 minutes before requesting another magic link." },
     statusCode: 429,
   });
+
+  // Reusable Authentication Middleware
+  const requireAuth = async (req: express.Request & { userId?: string }, res: express.Response, next: express.NextFunction) => {
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null;
+
+    if (!token) {
+      return res.status(401).json({ error: "Unauthorized: Missing authentication token." });
+    }
+
+    if (supabase) {
+      try {
+        const { data: { user }, error } = await supabase.auth.getUser(token);
+        if (error || !user) {
+          return res.status(401).json({ error: "Unauthorized: Invalid or expired session." });
+        }
+        (req as any).userId = user.id;
+        return next();
+      } catch (err: any) {
+        return res.status(401).json({ error: `Unauthorized: ${err.message || "Invalid or expired session."}` });
+      }
+    } else {
+      (req as any).userId = "dev-user";
+      return next();
+    }
+  };
+
+  // Admin bypass configuration
+  const ADMIN_USER_IDS = ["08fb4010-e3f6-4618-9bed-74fe79403af8"];
+
+  function isAdmin(userId: string): boolean {
+    return ADMIN_USER_IDS.includes(userId);
+  }
+
+  // Helper for daily usage limits
+  const inMemoryUsage = new Map<string, { images_generated: number; tool_calls: number; voice_minutes: number }>();
+
+  function getKolkataDateString(): string {
+    const now = new Date();
+    return now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  }
+
+  async function checkAndIncrementUsage(
+    userId: string,
+    type: "image" | "tool"
+  ): Promise<{ allowed: boolean; message: string }> {
+    if (isAdmin(userId)) {
+      return { allowed: true, message: "OK" };
+    }
+
+    const today = getKolkataDateString();
+    const key = `${userId}:${today}`;
+
+    let currentImages = 0;
+    let currentTools = 0;
+    let currentVoice = 0;
+    let dbRecordFound = false;
+
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from("user_usage")
+          .select("images_generated, tool_calls, voice_minutes")
+          .eq("user_id", userId)
+          .eq("date", today)
+          .maybeSingle();
+
+        if (error) {
+          if (error.code === "42P01") {
+            console.warn("Supabase 'user_usage' table does not exist. Please create it: CREATE TABLE user_usage (user_id TEXT, date TEXT, images_generated INT DEFAULT 0, voice_minutes INT DEFAULT 0, tool_calls INT DEFAULT 0, updated_at TIMESTAMPTZ, PRIMARY KEY (user_id, date));. Using in-memory fallback.");
+          } else {
+            console.warn("user_usage select warning:", error.message || error);
+          }
+        } else if (data) {
+          dbRecordFound = true;
+          currentImages = Number(data.images_generated) || 0;
+          currentTools = Number(data.tool_calls) || 0;
+          currentVoice = Number(data.voice_minutes) || 0;
+        }
+      } catch (err) {
+        console.warn("Error reading user_usage from Supabase:", err);
+      }
+    }
+
+    if (!dbRecordFound && inMemoryUsage.has(key)) {
+      const mem = inMemoryUsage.get(key)!;
+      currentImages = mem.images_generated;
+      currentTools = mem.tool_calls;
+      currentVoice = mem.voice_minutes;
+    }
+
+    // Free limits check
+    if (type === "image") {
+      const IMAGE_LIMIT = 5;
+      if (currentImages >= IMAGE_LIMIT) {
+        return {
+          allowed: false,
+          message: "Daily free limit reached. Upgrade coming soon!",
+        };
+      }
+    } else if (type === "tool") {
+      const TOOL_LIMIT = 30;
+      if (currentTools >= TOOL_LIMIT) {
+        return {
+          allowed: false,
+          message: "Daily free limit reached. Upgrade coming soon!",
+        };
+      }
+    }
+
+    const newImages = type === "image" ? currentImages + 1 : currentImages;
+    const newTools = type === "tool" ? currentTools + 1 : currentTools;
+
+    inMemoryUsage.set(key, {
+      images_generated: newImages,
+      tool_calls: newTools,
+      voice_minutes: currentVoice,
+    });
+
+    if (supabase) {
+      try {
+        const { error: upsertErr } = await supabase
+          .from("user_usage")
+          .upsert(
+            {
+              user_id: userId,
+              date: today,
+              images_generated: newImages,
+              tool_calls: newTools,
+              voice_minutes: currentVoice,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "user_id,date" }
+          );
+
+        if (upsertErr) {
+          console.warn("user_usage upsert warning:", upsertErr.message || upsertErr);
+        }
+      } catch (err) {
+        console.warn("Failed to update user_usage in Supabase:", err);
+      }
+    }
+
+    return { allowed: true, message: "OK" };
+  }
 
   // Telegram Webhook Endpoint
   app.post("/telegram/webhook", async (req, res) => {
@@ -1170,23 +1346,11 @@ async function startServer() {
 
       const authenticatedId = user.id;
 
-      // Verify if authenticated user already has memories to determine if this is their first login
-      const { count, error: countErr } = await supabase
-        .from("memories")
-        .select("*", { count: "exact", head: true })
-        .eq("user_id", authenticatedId);
-
-      if (countErr) {
-        console.error("[Migration] Error checking authenticated user memories:", countErr);
-        return res.status(500).json({ error: "Failed to verify authenticated user status." });
-      }
-
-      if (count && count > 0) {
-        console.log(`[Migration] User ${authenticatedId} already has memories. Skipping one-time migration.`);
+      if (anonymousId === authenticatedId) {
         return res.json({ success: true, migrated: false, count: 0 });
       }
 
-      // Execute migration reassignment update
+      // Reassign ALL memories from anonymousId to authenticatedId
       const { data, error } = await supabase
         .from("memories")
         .update({ user_id: authenticatedId })
@@ -1198,8 +1362,17 @@ async function startServer() {
         return res.status(500).json({ error: "Failed to perform database update for migration." });
       }
 
-      const migratedCount = data ? data.length : 0;
-      console.log(`Migrated ${migratedCount} memories from anonymous ID ${anonymousId} to user ${authenticatedId}`);
+      // Also migrate any in-memory items if present
+      let inMemoryMigratedCount = 0;
+      for (const item of inMemoryMemories) {
+        if (item.user_id === anonymousId) {
+          item.user_id = authenticatedId;
+          inMemoryMigratedCount++;
+        }
+      }
+
+      const migratedCount = (data ? data.length : 0) + inMemoryMigratedCount;
+      console.log(`[Migration] Successfully migrated ${migratedCount} memories from ${anonymousId} to ${authenticatedId}`);
 
       return res.json({
         success: true,
@@ -1219,7 +1392,12 @@ async function startServer() {
   });
 
   // REST API Route for real-time Weather
-  app.get("/api/tools/weather", async (req, res) => {
+  app.get("/api/tools/weather", requireAuth, async (req, res) => {
+    const userId = (req as any).userId || "dev-user";
+    const usage = await checkAndIncrementUsage(userId, "tool");
+    if (!usage.allowed) {
+      return res.status(429).json({ error: usage.message });
+    }
     const { location } = req.query;
     if (!location) {
       return res.status(400).json({ error: "Missing required 'location' parameter." });
@@ -1229,14 +1407,24 @@ async function startServer() {
   });
 
   // REST API Route for real-time News
-  app.get("/api/tools/news", async (req, res) => {
+  app.get("/api/tools/news", requireAuth, async (req, res) => {
+    const userId = (req as any).userId || "dev-user";
+    const usage = await checkAndIncrementUsage(userId, "tool");
+    if (!usage.allowed) {
+      return res.status(429).json({ error: usage.message });
+    }
     const { category } = req.query;
     const result = await getLatestNews(String(category || "general"));
     res.json(result);
   });
 
   // REST API Route for Web Search scraper
-  app.get("/api/tools/search", async (req, res) => {
+  app.get("/api/tools/search", requireAuth, async (req, res) => {
+    const userId = (req as any).userId || "dev-user";
+    const usage = await checkAndIncrementUsage(userId, "tool");
+    if (!usage.allowed) {
+      return res.status(429).json({ error: usage.message });
+    }
     const { query } = req.query;
     if (!query) {
       return res.status(400).json({ error: "Missing required 'query' parameter." });
@@ -1246,10 +1434,18 @@ async function startServer() {
   });
 
   // REST API Route to generate consistent images of Shibani via Fal.ai
-  app.post("/api/tools/generate-image", imageGenLimiter, async (req, res) => {
+  app.post("/api/tools/generate-image", requireAuth, imageGenLimiter, async (req, res) => {
+    const userId = (req as any).userId || "dev-user";
+    const usage = await checkAndIncrementUsage(userId, "image");
+    if (!usage.allowed) {
+      return res.status(429).json({ error: usage.message });
+    }
     const { description } = req.body;
     if (!description) {
       return res.status(400).json({ error: "Missing required 'description' parameter." });
+    }
+    if (typeof description === "string" && description.length > 800) {
+      return res.status(400).json({ error: "Description must be 800 characters or less." });
     }
 
     const apiKey = process.env.FAL_API_KEY;
@@ -1315,56 +1511,30 @@ async function startServer() {
   });
 
   // REST API Route to save a long-term memory fact
-  app.post("/api/memories/remember", async (req, res) => {
-    const authHeader = req.headers.authorization;
-    const token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null;
-    let resolvedUserId = req.body.userId;
-
-    if (supabase && token) {
-      try {
-        const { data: { user }, error } = await supabase.auth.getUser(token);
-        if (!error && user) {
-          resolvedUserId = user.id;
-        }
-      } catch (err) {
-        console.error("Error verifying token in remember:", err);
-      }
-    }
-
+  app.post("/api/memories/remember", requireAuth, async (req, res) => {
+    const userId = (req as any).userId;
     const { fact, category } = req.body;
-    if (!resolvedUserId || !fact) {
-      return res.status(400).json({ error: "Missing required fields userId or fact." });
+    if (!fact) {
+      return res.status(400).json({ error: "Missing required field 'fact'." });
     }
-    const success = await saveFactToDb(String(resolvedUserId), String(fact), String(category || "general"));
+    const success = await saveFactToDb(String(userId), String(fact), String(category || "general"));
     res.json({ success, fact, category });
   });
 
   // REST API Route to retrieve long-term memories for a user
-  app.get("/api/memories/recall", async (req, res) => {
-    const authHeader = req.headers.authorization;
-    const token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null;
-    let resolvedUserId = req.query.userId;
-
-    if (supabase && token) {
-      try {
-        const { data: { user }, error } = await supabase.auth.getUser(token);
-        if (!error && user) {
-          resolvedUserId = user.id;
-        }
-      } catch (err) {
-        console.error("Error verifying token in recall:", err);
-      }
-    }
-
-    if (!resolvedUserId) {
-      return res.status(400).json({ error: "Missing required 'userId' query parameter." });
-    }
-    const memories = await recallFactsFromDb(String(resolvedUserId));
+  app.get("/api/memories/recall", requireAuth, async (req, res) => {
+    const userId = (req as any).userId;
+    const memories = await recallFactsFromDb(String(userId));
     res.json({ memories });
   });
 
   // REST API Route to search YouTube for music track play request
-  app.get("/api/music/search", async (req, res) => {
+  app.get("/api/music/search", requireAuth, async (req, res) => {
+    const userId = (req as any).userId || "dev-user";
+    const usage = await checkAndIncrementUsage(userId, "tool");
+    if (!usage.allowed) {
+      return res.status(429).json({ error: usage.message });
+    }
     const { q } = req.query;
     if (!q) {
       return res.status(400).json({ error: "Missing required query parameter 'q'." });

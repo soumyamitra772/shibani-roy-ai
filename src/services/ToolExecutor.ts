@@ -5,12 +5,25 @@
 
 import { ToolCallPayload, Track } from "../types";
 import { MusicControlCenter } from "./MusicControlCenter";
-import { getOrCreateUserId, getAuthenticatedToken } from "../utils/userId";
+import { getAuthenticatedToken } from "../utils/userId";
 
 export interface ToolExecutionResult {
   success: boolean;
   message: string;
   output: any;
+}
+
+async function handleResponseError(response: Response, defaultMessage: string): Promise<never> {
+  const errData = await response.json().catch(() => ({}));
+  const errorMessage = errData.error || defaultMessage;
+
+  if (response.status === 429 && typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("shibani-notification", {
+      detail: { message: errorMessage, type: "error" }
+    }));
+  }
+
+  throw new Error(errorMessage);
 }
 
 export class ToolExecutor {
@@ -29,9 +42,13 @@ export class ToolExecutor {
           if (!location) {
             throw new Error("Missing required 'location' parameter.");
           }
-          const response = await fetch(`/api/tools/weather?location=${encodeURIComponent(location)}`);
+          const response = await fetch(`/api/tools/weather?location=${encodeURIComponent(location)}`, {
+            headers: {
+              Authorization: `Bearer ${getAuthenticatedToken() || ""}`
+            }
+          });
           if (!response.ok) {
-            throw new Error(`Failed to fetch weather for ${location}`);
+            await handleResponseError(response, `Failed to fetch weather for ${location}`);
           }
           const data = await response.json();
           if (!data.success) {
@@ -54,9 +71,13 @@ export class ToolExecutor {
 
         case "getLatestNews": {
           const category = args.category || "general";
-          const response = await fetch(`/api/tools/news?category=${encodeURIComponent(category)}`);
+          const response = await fetch(`/api/tools/news?category=${encodeURIComponent(category)}`, {
+            headers: {
+              Authorization: `Bearer ${getAuthenticatedToken() || ""}`
+            }
+          });
           if (!response.ok) {
-            throw new Error(`Failed to fetch news category ${category}`);
+            await handleResponseError(response, `Failed to fetch news category ${category}`);
           }
           const data = await response.json();
           if (!data.success) {
@@ -76,9 +97,13 @@ export class ToolExecutor {
           if (!query) {
             throw new Error("Missing required 'query' parameter.");
           }
-          const response = await fetch(`/api/tools/search?query=${encodeURIComponent(query)}`);
+          const response = await fetch(`/api/tools/search?query=${encodeURIComponent(query)}`, {
+            headers: {
+              Authorization: `Bearer ${getAuthenticatedToken() || ""}`
+            }
+          });
           if (!response.ok) {
-            throw new Error(`Search failed for query "${query}"`);
+            await handleResponseError(response, `Search failed for query "${query}"`);
           }
           const data = await response.json();
           if (!data.success) {
@@ -103,9 +128,13 @@ export class ToolExecutor {
           const query = `${trackName} ${artistName}`.trim();
 
           // Resolve music request to a playable YouTube stream via our backend resolver
-          const response = await fetch(`/api/music/search?q=${encodeURIComponent(query)}`);
+          const response = await fetch(`/api/music/search?q=${encodeURIComponent(query)}`, {
+            headers: {
+              Authorization: `Bearer ${getAuthenticatedToken() || ""}`
+            }
+          });
           if (!response.ok) {
-            throw new Error(`Could not find track "${query}" on YouTube.`);
+            await handleResponseError(response, `Could not find track "${query}" on YouTube.`);
           }
           const track: Track = await response.json();
 
@@ -293,12 +322,12 @@ export class ToolExecutor {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
+              Authorization: `Bearer ${getAuthenticatedToken() || ""}`,
             },
             body: JSON.stringify({ description }),
           });
           if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.error || `Failed to generate image: ${response.statusText}`);
+            await handleResponseError(response, `Failed to generate image: ${response.statusText}`);
           }
           const data = await response.json();
           if (!data.success) {
@@ -404,7 +433,6 @@ export class ToolExecutor {
 
         case "rememberFact": {
           const { fact, category } = args;
-          const userId = getOrCreateUserId();
           if (!fact || !category) {
             throw new Error("Missing 'fact' or 'category' parameters for rememberFact.");
           }
@@ -413,12 +441,12 @@ export class ToolExecutor {
             method: "POST",
             headers: { 
               "Content-Type": "application/json",
-              ...(token ? { "Authorization": `Bearer ${token}` } : {})
+              Authorization: `Bearer ${token || ""}`
             },
-            body: JSON.stringify({ userId, fact, category })
+            body: JSON.stringify({ fact, category })
           });
           if (!response.ok) {
-            throw new Error("Failed to save memory to database.");
+            await handleResponseError(response, "Failed to save memory to database.");
           }
           const data = await response.json();
           return {
@@ -429,15 +457,14 @@ export class ToolExecutor {
         }
 
         case "recallFacts": {
-          const userId = getOrCreateUserId();
           const token = getAuthenticatedToken();
-          const response = await fetch(`/api/memories/recall?userId=${encodeURIComponent(userId)}`, {
+          const response = await fetch("/api/memories/recall", {
             headers: {
-              ...(token ? { "Authorization": `Bearer ${token}` } : {})
+              Authorization: `Bearer ${token || ""}`
             }
           });
           if (!response.ok) {
-            throw new Error("Failed to retrieve memories from database.");
+            await handleResponseError(response, "Failed to retrieve memories from database.");
           }
           const data = await response.json();
           const memoriesList = data.memories || [];

@@ -175,6 +175,17 @@ export default function App() {
     setTimeout(() => setNotification(null), 4000);
   };
 
+  // Listen for global custom notifications (e.g. rate limit / usage quota alerts)
+  useEffect(() => {
+    const handleCustomNotification = (e: any) => {
+      if (e.detail?.message) {
+        triggerNotification(e.detail.message, e.detail.type || "error");
+      }
+    };
+    window.addEventListener("shibani-notification", handleCustomNotification);
+    return () => window.removeEventListener("shibani-notification", handleCustomNotification);
+  }, []);
+
   const handleAvatarPreferenceChange = async (newPref: string) => {
     setAvatarPreference(newPref);
     const userId = session?.user?.id || null;
