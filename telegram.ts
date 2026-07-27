@@ -645,67 +645,6 @@ export async function handleTelegramWebhook(
     console.log("Total Prompt Size:", totalPromptSize, "characters");
     console.log("========================================");
 
-    // Calculate prompt composition metrics
-    const sysChars = systemInstruction.length;
-    const sysTokens = Math.ceil(sysChars / 4);
-
-    const historyChars = history.reduce((acc, item) => acc + (item.message?.length || 0), 0);
-    const historyTokens = Math.ceil(historyChars / 4);
-
-    const userMsgChars = text.length;
-    const userMsgTokens = Math.ceil(userMsgChars / 4);
-
-    const totalChars = sysChars + historyChars + userMsgChars;
-    const totalTokens = sysTokens + historyTokens + userMsgTokens;
-
-    console.log("----------------------------------------");
-    console.log("SYSTEM PROMPT");
-    console.log(`Characters: ${sysChars}`);
-    console.log(`Estimated Tokens: ${sysTokens}`);
-    console.log("");
-    console.log("CHAT HISTORY");
-    console.log(`Characters: ${historyChars}`);
-    console.log(`Estimated Tokens: ${historyTokens}`);
-    console.log("");
-    console.log("CURRENT USER MESSAGE");
-    console.log(`Characters: ${userMsgChars}`);
-    console.log(`Estimated Tokens: ${userMsgTokens}`);
-    console.log("");
-    console.log("TOTAL");
-    console.log(`Characters: ${totalChars}`);
-    console.log(`Estimated Tokens: ${totalTokens}`);
-    console.log("----------------------------------------");
-
-    const sysFirst300 = systemInstruction.slice(0, 300);
-    const sysLast300 = systemInstruction.slice(-300);
-    const historyCharCount = history.reduce((acc, item) => acc + (item.message?.length || 0), 0);
-    const finalContentChars = sanitizedContents.reduce((acc, turn) => acc + (turn.parts?.[0]?.text?.length || 0), 0);
-
-    console.log("========================================");
-    console.log("");
-    console.log("SYSTEM INSTRUCTION");
-    console.log(`Character Count: ${systemInstruction.length}`);
-    console.log(`First 300 characters: ${sysFirst300}`);
-    console.log(`Last 300 characters: ${sysLast300}`);
-    console.log("");
-    console.log("----------------------------------------");
-    console.log("");
-    console.log("CHAT HISTORY");
-    console.log(`Character Count: ${historyCharCount}`);
-    console.log(`Number of Messages: ${historyMessageCount}`);
-    console.log("");
-    console.log("----------------------------------------");
-    console.log("");
-    console.log("CURRENT USER MESSAGE");
-    console.log(`Character Count: ${text.length}`);
-    console.log(`Content: ${text}`);
-    console.log("");
-    console.log("----------------------------------------");
-    console.log("");
-    console.log("FINAL CONTENT SENT TO GEMINI");
-    console.log(`Character Count: ${finalContentChars}`);
-    console.log("");
-    console.log("========================================");
 
     const response = await ai.models.generateContent({
       model: "gemini-3.6-flash",
