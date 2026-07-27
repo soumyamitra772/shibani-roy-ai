@@ -181,6 +181,138 @@ export async function sendChatAction(botToken: string, chatId: number | string, 
 }
 
 /**
+ * Extract response text safely from Gemini API response across different SDK structures/getters
+ */
+function extractGeminiText(response: any): string | undefined {
+  if (!response) return undefined;
+
+  // 1. Direct text property or method on response
+  if (typeof response.text === "string" && response.text.trim().length > 0) {
+    return response.text.trim();
+  }
+  if (typeof response.text === "function") {
+    try {
+      const fnText = response.text();
+      if (typeof fnText === "string" && fnText.trim().length > 0) {
+        return fnText.trim();
+      }
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  // 2. Check wrapped response object (e.g. response.response)
+  if (response.response) {
+    const wrappedText = extractGeminiText(response.response);
+    if (wrappedText) return wrappedText;
+  }
+
+  // 3. Inspect candidates array
+  const candidates = response.candidates || response.response?.candidates;
+  if (Array.isArray(candidates) && candidates.length > 0) {
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+
+      // candidate.text property or method
+      if (typeof candidate.text === "string" && candidate.text.trim().length > 0) {
+        return candidate.text.trim();
+      }
+      if (typeof candidate.text === "function") {
+        try {
+          const fnText = candidate.text();
+          if (typeof fnText === "string" && fnText.trim().length > 0) {
+            return fnText.trim();
+          }
+        } catch (e) {}
+      }
+
+      // candidate.content
+      const content = candidate.content;
+      if (typeof content === "string" && content.trim().length > 0) {
+        return content.trim();
+      }
+
+      if (content && typeof content === "object") {
+        // candidate.content.parts array
+        if (Array.isArray(content.parts) && content.parts.length > 0) {
+          // Prefer parts that are non-thought text if available
+          const nonThoughtParts = content.parts.filter(
+            (p: any) => p && !p.thought && typeof p.text === "string" && p.text.trim().length > 0
+          );
+          if (nonThoughtParts.length > 0) {
+            const joined = nonThoughtParts.map((p: any) => p.text).join("").trim();
+            if (joined.length > 0) return joined;
+          }
+
+          // Fallback to all parts with text
+          const allParts = content.parts
+            .map((p: any) => {
+              if (typeof p === "string") return p;
+              if (!p) return "";
+              if (typeof p.text === "string") return p.text;
+              if (typeof p.text === "function") {
+                try {
+                  return p.text();
+                } catch (e) {
+                  return "";
+                }
+              }
+              return "";
+            })
+            .filter((t: string) => t.length > 0)
+            .join("")
+            .trim();
+
+          if (allParts.length > 0) {
+            return allParts;
+          }
+        }
+
+        // candidate.content.text
+        if (typeof content.text === "string" && content.text.trim().length > 0) {
+          return content.text.trim();
+        }
+      }
+    }
+  }
+
+  // 4. Recursive search for any non-empty 'text' property in response
+  try {
+    const textPieces: string[] = [];
+    const searchObj = (obj: any, depth = 0) => {
+      if (!obj || depth > 6) return;
+      if (typeof obj !== "object") return;
+
+      for (const key of Object.keys(obj)) {
+        if (key === "text") {
+          const val = obj[key];
+          if (typeof val === "string" && val.trim().length > 0) {
+            textPieces.push(val.trim());
+          } else if (typeof val === "function") {
+            try {
+              const res = val();
+              if (typeof res === "string" && res.trim().length > 0) {
+                textPieces.push(res.trim());
+              }
+            } catch (e) {}
+          }
+        } else if (typeof obj[key] === "object" && obj[key] !== null) {
+          searchObj(obj[key], depth + 1);
+        }
+      }
+    };
+    searchObj(response);
+    if (textPieces.length > 0) {
+      return textPieces.join("\n").trim();
+    }
+  } catch (e) {
+    // ignore
+  }
+
+  return undefined;
+}
+
+/**
  * Send text message back to Telegram Chat via Telegram Bot API
  */
 export async function sendTelegramMessage(botToken: string, chatId: number | string, text: string) {
@@ -204,7 +336,7 @@ export async function sendTelegramMessage(botToken: string, chatId: number | str
 }
 
 /**
- * Load last 20 chat messages for a Telegram user
+ * Load last 5 chat messages for a Telegram user
  */
 async function loadTelegramHistory(supabase: SupabaseClient | null, telegramUserId: string): Promise<TelegramHistoryItem[]> {
   if (supabase) {
@@ -214,7 +346,7 @@ async function loadTelegramHistory(supabase: SupabaseClient | null, telegramUser
         .select("*")
         .eq("telegram_user_id", telegramUserId)
         .order("created_at", { ascending: false })
-        .limit(20);
+        .limit(5);
 
       if (error) {
         if (error.code === "42P01") {
@@ -226,18 +358,18 @@ async function loadTelegramHistory(supabase: SupabaseClient | null, telegramUser
         } else {
           console.warn("[Telegram Bot] Supabase select error:", error.message || error);
         }
-        return (inMemoryTelegramHistory.get(telegramUserId) || []).slice(-20);
+        return (inMemoryTelegramHistory.get(telegramUserId) || []).slice(-5);
       }
 
       // Reverse to chronological order (oldest first)
       return (data || []).reverse();
     } catch (err) {
       console.warn("[Telegram Bot] Error reading from Supabase, using in-memory fallback:", err);
-      return (inMemoryTelegramHistory.get(telegramUserId) || []).slice(-20);
+      return (inMemoryTelegramHistory.get(telegramUserId) || []).slice(-5);
     }
   }
 
-  return (inMemoryTelegramHistory.get(telegramUserId) || []).slice(-20);
+  return (inMemoryTelegramHistory.get(telegramUserId) || []).slice(-5);
 }
 
 /**
@@ -449,8 +581,9 @@ export async function handleTelegramWebhook(
   }
 
   try {
-    // 1. Get Telegram User ID & load last 20 messages from telegram_chat_history
-    const history = await loadTelegramHistory(supabase, telegramUserId);
+    // 1. Get Telegram User ID & load last 5 messages from telegram_chat_history
+    const rawHistory = await loadTelegramHistory(supabase, telegramUserId);
+    const history = rawHistory.slice(-5);
 
     // 2. Format contents for Gemini
     const contents: any[] = history.map((item) => ({
@@ -465,7 +598,7 @@ export async function handleTelegramWebhook(
     });
 
     // Sanitize & optimize turns to alternate user and model roles
-    const sanitizedContents: any[] = [];
+    let sanitizedContents: any[] = [];
     for (const turn of contents) {
       if (!turn.parts || !turn.parts[0]?.text) continue;
       if (sanitizedContents.length > 0 && sanitizedContents[sanitizedContents.length - 1].role === turn.role) {
@@ -473,6 +606,11 @@ export async function handleTelegramWebhook(
       } else {
         sanitizedContents.push({ role: turn.role, parts: [{ text: turn.parts[0].text }] });
       }
+    }
+
+    // Ensure contents do not exceed 5 messages total
+    if (sanitizedContents.length > 5) {
+      sanitizedContents = sanitizedContents.slice(-5);
     }
 
     // Ensure turn sequence starts with 'user'
@@ -487,6 +625,11 @@ export async function handleTelegramWebhook(
     // 3. System prompt with Shibani personality
     const systemInstruction = getSystemInstructionFn();
 
+    // Calculate prompt size & message counts
+    const historyMessageCount = history.length;
+    const contentsTextLength = sanitizedContents.reduce((acc, turn) => acc + (turn.parts?.[0]?.text?.length || 0), 0);
+    const totalPromptSize = systemInstruction.length + contentsTextLength;
+
     // Send typing action indicator to Telegram
     await sendChatAction(botToken, chatId, "typing");
 
@@ -498,7 +641,8 @@ export async function handleTelegramWebhook(
     console.log("Chat ID:", chatId);
     console.log("Message:", text);
     console.log("Model:", "gemini-3.6-flash");
-    console.log("History Length:", sanitizedContents.length);
+    console.log("History Message Count:", historyMessageCount);
+    console.log("Total Prompt Size:", totalPromptSize, "characters");
     console.log("========================================");
 
     const response = await ai.models.generateContent({
@@ -518,24 +662,14 @@ export async function handleTelegramWebhook(
     console.log(response.text);
     console.log("=========================");
 
+    const promptTokenCount = response.usageMetadata?.promptTokenCount ?? "N/A";
     console.log("[Telegram Bot] Gemini response received successfully.");
+    console.log("Prompt Token Count:", promptTokenCount);
+    console.log("History Message Count:", historyMessageCount);
+    console.log("Total Prompt Size:", totalPromptSize, "characters");
 
-    // Extract text from Gemini response (check response.text, candidates.content.parts, candidates.text)
-    let replyText: string | undefined = undefined;
-
-    if (typeof response.text === "string" && response.text.trim().length > 0) {
-      replyText = response.text.trim();
-    } else if (response.candidates?.[0]?.content?.parts) {
-      const partsText = response.candidates[0].content.parts
-        .map((part: any) => part.text || "")
-        .join("")
-        .trim();
-      if (partsText.length > 0) {
-        replyText = partsText;
-      }
-    } else if (typeof (response.candidates?.[0] as any)?.text === "string" && (response.candidates[0] as any).text.trim().length > 0) {
-      replyText = (response.candidates[0] as any).text.trim();
-    }
+    // Extract text from Gemini response using robust extraction helper
+    let replyText = extractGeminiText(response);
 
     if (!replyText) {
       console.error("[Telegram Bot] Gemini returned no text in response. Full response object:", JSON.stringify(response, null, 2));
