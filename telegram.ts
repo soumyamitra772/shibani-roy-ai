@@ -520,7 +520,27 @@ export async function handleTelegramWebhook(
 
     console.log("[Telegram Bot] Gemini response received successfully.");
 
-    const replyText = response.text ? response.text.trim() : "I'm right here! What's on your mind today? 😊";
+    // Extract text from Gemini response (check response.text, candidates.content.parts, candidates.text)
+    let replyText: string | undefined = undefined;
+
+    if (typeof response.text === "string" && response.text.trim().length > 0) {
+      replyText = response.text.trim();
+    } else if (response.candidates?.[0]?.content?.parts) {
+      const partsText = response.candidates[0].content.parts
+        .map((part: any) => part.text || "")
+        .join("")
+        .trim();
+      if (partsText.length > 0) {
+        replyText = partsText;
+      }
+    } else if (typeof (response.candidates?.[0] as any)?.text === "string" && (response.candidates[0] as any).text.trim().length > 0) {
+      replyText = (response.candidates[0] as any).text.trim();
+    }
+
+    if (!replyText) {
+      console.error("[Telegram Bot] Gemini returned no text in response. Full response object:", JSON.stringify(response, null, 2));
+      replyText = "I'm sorry, I couldn't generate a reply.";
+    }
 
     // Increment daily usage count only after successful Gemini response
     await incrementDailyUsage(supabase, telegramUserId, today);
