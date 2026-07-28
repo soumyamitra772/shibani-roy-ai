@@ -226,6 +226,23 @@ function getSystemInstruction(memoriesList: MemoryItem[] = []): string {
 - Year: ${now.getFullYear()} — use this year in all search queries for live/recent data.
 ${memoriesSection}`;
 }
+
+async function getOrCreateMemory(userId: string): Promise<MemoryItem[]> {
+  return await recallFactsFromDb(userId);
+}
+
+async function generateGeminiReply(messageText: string, memoryContext: MemoryItem[], userId: string): Promise<string> {
+  const systemInstruction = getSystemInstruction(memoryContext);
+  const response = await generateContentWithRetry({
+    model: "gemini-3.6-flash",
+    contents: [{ role: "user", parts: [{ text: messageText }] }],
+    config: {
+      systemInstruction,
+      temperature: 0.85,
+    },
+  });
+  return response?.text || "Hey! I'm Shibani. How can I help you today? 😊";
+}
 // ── END COMPANION SYSTEM PROMPT ──────────────────────────────────
 
 // ── TELEGRAM BOT SYSTEM PROMPT ───────────────────────────────────
@@ -1074,7 +1091,7 @@ async function startServer() {
   });
 
   // Meta (Facebook Messenger & Instagram) Incoming Webhook Handler
-  app.post("/webhook/meta", (req, res) => {
+  app.post("/webhook/meta", async (req, res) => {
     const body = req.body;
     console.log("[Meta Webhook] Raw body:", JSON.stringify(body));
     const pageAccessToken = process.env.PAGE_ACCESS_TOKEN;
@@ -1099,7 +1116,33 @@ async function startServer() {
               if (change.field === "messages") {
                 const senderId = change.value?.sender?.id;
                 const messageText = change.value?.message?.text;
-                console.log(`[Meta Webhook] Instagram - Sender ID: ${senderId}, Message: ${messageText}`);
+                if (senderId && messageText) {
+                  console.log(`[Meta Webhook] Instagram - Sender ID: ${senderId}, Message: ${messageText}`);
+                  
+                  try {
+                    // Get or create memory context for this Instagram user
+                    const memoryContext = await getOrCreateMemory(`instagram_${senderId}`);
+                    
+                    // Generate reply using existing Gemini pipeline
+                    const reply = await generateGeminiReply(messageText, memoryContext, `instagram_${senderId}`);
+                    
+                    // Send reply back via Instagram Graph API
+                    const igToken = process.env.INSTAGRAM_ACCESS_TOKEN;
+                    await fetch(`https://graph.facebook.com/v22.0/me/messages`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        recipient: { id: senderId },
+                        message: { text: reply },
+                        access_token: igToken
+                      })
+                    });
+                    
+                    console.log(`[Meta Webhook] Instagram reply sent to ${senderId}`);
+                  } catch (error) {
+                    console.error(`[Meta Webhook] Instagram reply error:`, error);
+                  }
+                }
               }
             }
           }
