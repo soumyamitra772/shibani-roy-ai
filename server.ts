@@ -1093,65 +1093,77 @@ async function startServer() {
   // Meta (Facebook Messenger & Instagram) Incoming Webhook Handler
   app.post("/webhook/meta", async (req, res) => {
     const body = req.body;
+
+    if (!body || (body.object !== "page" && body.object !== "instagram")) {
+      return res.sendStatus(404);
+    }
+
     console.log("[Meta Webhook] Raw body:", JSON.stringify(body));
-    const pageAccessToken = process.env.PAGE_ACCESS_TOKEN;
 
-    if (body && (body.object === "page" || body.object === "instagram")) {
-      if (body.entry && Array.isArray(body.entry)) {
-        for (const entry of body.entry) {
-          // Facebook Messenger format
-          const messagingEvents = entry.messaging;
-          if (messagingEvents && Array.isArray(messagingEvents)) {
-            for (const event of messagingEvents) {
-              const senderId = event.sender?.id;
-              const messageText = event.message?.text;
-              console.log(`[Meta Webhook] Facebook - Sender ID: ${senderId}, Message: ${messageText}`);
-            }
-          }
+    if (body.entry && Array.isArray(body.entry)) {
+      for (const entry of body.entry) {
 
-          // Instagram format
-          const changeEvents = entry.changes;
-          if (changeEvents && Array.isArray(changeEvents)) {
-            for (const change of changeEvents) {
-              if (change.field === "messages") {
-                const senderId = change.value?.sender?.id;
-                const messageText = change.value?.message?.text;
-                if (senderId && messageText) {
-                  console.log(`[Meta Webhook] Instagram - Sender ID: ${senderId}, Message: ${messageText}`);
-                  
-                  try {
-                    // Get or create memory context for this Instagram user
-                    const memoryContext = await getOrCreateMemory(`instagram_${senderId}`);
-                    
-                    // Generate reply using existing Gemini pipeline
-                    const reply = await generateGeminiReply(messageText, memoryContext, `instagram_${senderId}`);
-                    
-                    // Send reply back via Instagram Graph API
-                    const igToken = process.env.INSTAGRAM_ACCESS_TOKEN;
-                    await fetch(`https://graph.facebook.com/v22.0/me/messages`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        recipient: { id: senderId },
-                        message: { text: reply },
-                        access_token: igToken
-                      })
-                    });
-                    
-                    console.log(`[Meta Webhook] Instagram reply sent to ${senderId}`);
-                  } catch (error) {
-                    console.error(`[Meta Webhook] Instagram reply error:`, error);
-                  }
-                }
-              }
+        // Facebook Messenger format
+        if (entry.messaging && Array.isArray(entry.messaging)) {
+          for (const event of entry.messaging) {
+            const senderId = event.sender?.id;
+            const messageText = event.message?.text;
+            if (!senderId || !messageText) continue;
+            console.log(`[Meta Webhook] Facebook - Sender ID: ${senderId}, Message: ${messageText}`);
+            
+            try {
+              const memoryContext = await getOrCreateMemory(`facebook_${senderId}`);
+              const reply = await generateGeminiReply(messageText, memoryContext, `facebook_${senderId}`);
+              const fbToken = process.env.PAGE_ACCESS_TOKEN;
+              await fetch(`https://graph.facebook.com/v22.0/me/messages`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  recipient: { id: senderId },
+                  message: { text: reply },
+                  access_token: fbToken
+                })
+              });
+              console.log(`[Meta Webhook] Facebook reply sent to ${senderId}`);
+            } catch (error) {
+              console.error(`[Meta Webhook] Facebook reply error:`, error);
             }
           }
         }
+
+        // Instagram DM format
+        if (entry.changes && Array.isArray(entry.changes)) {
+          for (const change of entry.changes) {
+            if (change.field !== "messages") continue;
+            const senderId = change.value?.sender?.id;
+            const messageText = change.value?.message?.text;
+            if (!senderId || !messageText) continue;
+            console.log(`[Meta Webhook] Instagram - Sender ID: ${senderId}, Message: ${messageText}`);
+            
+            try {
+              const memoryContext = await getOrCreateMemory(`instagram_${senderId}`);
+              const reply = await generateGeminiReply(messageText, memoryContext, `instagram_${senderId}`);
+              const igToken = process.env.INSTAGRAM_ACCESS_TOKEN;
+              await fetch(`https://graph.facebook.com/v22.0/me/messages`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  recipient: { id: senderId },
+                  message: { text: reply },
+                  access_token: igToken
+                })
+              });
+              console.log(`[Meta Webhook] Instagram reply sent to ${senderId}`);
+            } catch (error) {
+              console.error(`[Meta Webhook] Instagram reply error:`, error);
+            }
+          }
+        }
+
       }
-      return res.status(200).send("EVENT_RECEIVED");
-    } else {
-      return res.sendStatus(404);
     }
+
+    return res.status(200).send("EVENT_RECEIVED");
   });
 
   app.use("/api/", apiLimiter);
