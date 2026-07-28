@@ -1057,6 +1057,45 @@ async function startServer() {
     await handleTelegramWebhook(req, res, ai, supabase, getTelegramSystemInstruction);
   });
 
+  // Meta (Facebook Messenger & Instagram) Webhook Verification
+  app.get("/webhook/meta", (req, res) => {
+    const verifyToken = process.env.WEBHOOK_VERIFY_TOKEN;
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
+
+    if (mode === "subscribe" && token && token === verifyToken) {
+      console.log("[Meta Webhook] Verification successful.");
+      return res.status(200).send(challenge);
+    } else {
+      return res.sendStatus(403);
+    }
+  });
+
+  // Meta (Facebook Messenger & Instagram) Incoming Webhook Handler
+  app.post("/webhook/meta", (req, res) => {
+    const body = req.body;
+    const pageAccessToken = process.env.PAGE_ACCESS_TOKEN;
+
+    if (body && (body.object === "page" || body.object === "instagram")) {
+      if (body.entry && Array.isArray(body.entry)) {
+        for (const entry of body.entry) {
+          const webhookEvents = entry.messaging;
+          if (webhookEvents && Array.isArray(webhookEvents)) {
+            for (const event of webhookEvents) {
+              const senderId = event.sender?.id;
+              const messageText = event.message?.text;
+              console.log(`[Meta Webhook] Sender ID: ${senderId}, Message: ${messageText}`);
+            }
+          }
+        }
+      }
+      return res.status(200).send("EVENT_RECEIVED");
+    } else {
+      return res.sendStatus(404);
+    }
+  });
+
   app.use("/api/", apiLimiter);
 
   // REST API Route for standard Chat Mode with streaming support
