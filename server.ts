@@ -829,6 +829,7 @@ function optimizeContents(contents: any[]): any[] {
 
 async function startServer() {
   const app = express();
+  app.set('trust proxy', 1);
   const server = http.createServer(app);
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
