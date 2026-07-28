@@ -1,3 +1,4 @@
+import axios from "axios";
 import "./instrument";
 import * as Sentry from "@sentry/node";
 import express from "express";
@@ -1092,6 +1093,7 @@ async function startServer() {
 
   // Meta (Facebook Messenger & Instagram) Incoming Webhook Handler
   app.post("/webhook/meta", async (req, res) => {
+    console.log("[Meta Webhook] RAW HIT:", JSON.stringify(req.body, null, 2));
     const body = req.body;
 
     if (!body || (body.object !== "page" && body.object !== "instagram")) {
@@ -1141,6 +1143,62 @@ async function startServer() {
             console.log(`[Meta Webhook] Instagram - Sender ID: ${senderId}, Message: ${messageText}`);
             
             try {
+              if (supabase) {
+                // Get or create instagram user record
+                let { data: igUser, error } = await supabase
+                  .from('instagram_users')
+                  .select('*')
+                  .eq('user_id', senderId)
+                  .single();
+
+                // If user doesn't exist, create them
+                if (!igUser) {
+                  const { data: newUser } = await supabase
+                    .from('instagram_users')
+                    .insert({ user_id: senderId })
+                    .select()
+                    .single();
+                  igUser = newUser;
+                }
+
+                if (igUser) {
+                  // Reset daily counter if last_reset_date is not today
+                  const today = new Date().toISOString().split('T')[0];
+                  if (igUser.last_reset_date !== today) {
+                    await supabase
+                      .from('instagram_users')
+                      .update({ message_count: 0, last_reset_date: today })
+                      .eq('user_id', senderId);
+                    igUser.message_count = 0;
+                  }
+
+                  // Check if manual mode
+                  if (igUser.ai_mode === 'manual') {
+                    console.log(`[Meta Webhook] Manual mode for ${senderId} — skipping AI reply`);
+                    continue;
+                  }
+
+                  // Check daily cap (skip cap for subscribers)
+                  if (!igUser.is_subscriber && igUser.message_count >= 10) {
+                    // Send subscribe prompt
+                    const capMessage = "You've reached your 10 free messages for today 🌸 Come back tomorrow for more, or subscribe to chat with me unlimited! 💌";
+                    await axios.post(
+                      `https://graph.facebook.com/v22.0/me/messages`,
+                      { recipient: { id: senderId }, message: { text: capMessage } },
+                      { params: { access_token: process.env.INSTAGRAM_ACCESS_TOKEN } }
+                    );
+                    console.log(`[Meta Webhook] Daily cap reached for ${senderId}`);
+                    continue;
+                  }
+
+                  // Increment message count
+                  await supabase
+                    .from('instagram_users')
+                    .update({ message_count: igUser.message_count + 1 })
+                    .eq('user_id', senderId);
+                }
+              }
+
               const memoryContext = await getOrCreateMemory(`instagram_${senderId}`);
               const reply = await generateGeminiReply(messageText, memoryContext, `instagram_${senderId}`);
               const igToken = process.env.INSTAGRAM_ACCESS_TOKEN;
