@@ -244,6 +244,16 @@ async function generateGeminiReply(messageText: string, memoryContext: MemoryIte
   });
   return response?.text || "Hey! I'm Shibani. How can I help you today? 😊";
 }
+
+async function sendTelegramMessage(text: string) {
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+  const chatId = process.env.TELEGRAM_CHAT_ID;
+  await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+    chat_id: chatId,
+    text,
+    parse_mode: 'HTML'
+  });
+}
 // ── END COMPANION SYSTEM PROMPT ──────────────────────────────────
 
 // ── TELEGRAM BOT SYSTEM PROMPT ───────────────────────────────────
@@ -1175,6 +1185,9 @@ async function startServer() {
                   // Check if manual mode
                   if (igUser.ai_mode === 'manual') {
                     console.log(`[Meta Webhook] Manual mode for ${senderId} — skipping AI reply`);
+                    await sendTelegramMessage(
+                      `📩 <b>New Instagram DM (Manual Mode)</b>\n👤 Sender ID: <code>${senderId}</code>\n💬 Message: ${messageText}`
+                    );
                     continue;
                   }
 
@@ -1222,6 +1235,56 @@ async function startServer() {
     }
 
     return res.status(200).send("EVENT_RECEIVED");
+  });
+
+  app.post("/webhook/telegram", async (req, res) => {
+    const body = req.body;
+    const message = body?.message;
+    const text = message?.text?.trim();
+    const chatId = message?.chat?.id?.toString();
+
+    // Only respond to your own chat
+    if (chatId !== process.env.TELEGRAM_CHAT_ID) {
+      return res.sendStatus(403);
+    }
+
+    console.log(`[Telegram] Command received: ${text}`);
+
+    // /manual <user_id>
+    if (text?.startsWith('/manual ')) {
+      const userId = text.split(' ')[1];
+      await supabase.from('instagram_users').upsert({ user_id: userId, ai_mode: 'manual' });
+      await sendTelegramMessage(`✅ Switched <code>${userId}</code> to <b>manual</b> mode`);
+    }
+
+    // /auto <user_id>
+    else if (text?.startsWith('/auto ')) {
+      const userId = text.split(' ')[1];
+      await supabase.from('instagram_users').upsert({ user_id: userId, ai_mode: 'auto' });
+      await sendTelegramMessage(`✅ Switched <code>${userId}</code> to <b>auto</b> mode`);
+    }
+
+    // /status <user_id>
+    else if (text?.startsWith('/status ')) {
+      const userId = text.split(' ')[1];
+      const { data } = await supabase.from('instagram_users').select('*').eq('user_id', userId).single();
+      if (data) {
+        await sendTelegramMessage(
+          `👤 <b>User:</b> <code>${userId}</code>\n🤖 Mode: <b>${data.ai_mode}</b>\n💬 Messages today: <b>${data.message_count}</b>\n⭐ Subscriber: <b>${data.is_subscriber}</b>`
+        );
+      } else {
+        await sendTelegramMessage(`❌ User <code>${userId}</code> not found`);
+      }
+    }
+
+    // /help
+    else if (text === '/help') {
+      await sendTelegramMessage(
+        `<b>Shibani Admin Commands:</b>\n\n/manual &lt;user_id&gt; — Switch to manual mode\n/auto &lt;user_id&gt; — Switch to auto mode\n/status &lt;user_id&gt; — Check user status\n/help — Show this message`
+      );
+    }
+
+    return res.sendStatus(200);
   });
 
   app.use("/api/", apiLimiter);
