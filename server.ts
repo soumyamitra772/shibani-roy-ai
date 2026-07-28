@@ -1076,6 +1076,7 @@ async function startServer() {
   // Meta (Facebook Messenger & Instagram) Incoming Webhook Handler
   app.post("/webhook/meta", (req, res) => {
     const body = req.body;
+    console.log("[Meta Webhook] Raw body:", JSON.stringify(body));
     const pageAccessToken = process.env.PAGE_ACCESS_TOKEN;
 
     if (body && (body.object === "page" || body.object === "instagram")) {
