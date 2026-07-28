@@ -1082,12 +1082,25 @@ async function startServer() {
     if (body && (body.object === "page" || body.object === "instagram")) {
       if (body.entry && Array.isArray(body.entry)) {
         for (const entry of body.entry) {
-          const webhookEvents = entry.messaging;
-          if (webhookEvents && Array.isArray(webhookEvents)) {
-            for (const event of webhookEvents) {
+          // Facebook Messenger format
+          const messagingEvents = entry.messaging;
+          if (messagingEvents && Array.isArray(messagingEvents)) {
+            for (const event of messagingEvents) {
               const senderId = event.sender?.id;
               const messageText = event.message?.text;
-              console.log(`[Meta Webhook] Sender ID: ${senderId}, Message: ${messageText}`);
+              console.log(`[Meta Webhook] Facebook - Sender ID: ${senderId}, Message: ${messageText}`);
+            }
+          }
+
+          // Instagram format
+          const changeEvents = entry.changes;
+          if (changeEvents && Array.isArray(changeEvents)) {
+            for (const change of changeEvents) {
+              if (change.field === "messages") {
+                const senderId = change.value?.sender?.id;
+                const messageText = change.value?.message?.text;
+                console.log(`[Meta Webhook] Instagram - Sender ID: ${senderId}, Message: ${messageText}`);
+              }
             }
           }
         }
