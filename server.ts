@@ -1115,43 +1115,23 @@ async function startServer() {
     if (body.entry && Array.isArray(body.entry)) {
       for (const entry of body.entry) {
 
-        // Facebook Messenger format
-        if (entry.messaging && Array.isArray(entry.messaging)) {
-          for (const event of entry.messaging) {
-            const senderId = event.sender?.id;
-            const messageText = event.message?.text;
-            if (!senderId || !messageText) continue;
-            console.log(`[Meta Webhook] Facebook - Sender ID: ${senderId}, Message: ${messageText}`);
-            
-            try {
-              const memoryContext = await getOrCreateMemory(`facebook_${senderId}`);
-              const reply = await generateGeminiReply(messageText, memoryContext, `facebook_${senderId}`);
-              const fbToken = process.env.PAGE_ACCESS_TOKEN;
-              await fetch(`https://graph.facebook.com/v22.0/me/messages`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  recipient: { id: senderId },
-                  message: { text: reply },
-                  access_token: fbToken
-                })
-              });
-              console.log(`[Meta Webhook] Facebook reply sent to ${senderId}`);
-            } catch (error) {
-              console.error(`[Meta Webhook] Facebook reply error:`, error);
-            }
-          }
-        }
-
-        // Instagram DM format
+        // Handle both Facebook and Instagram via entry.changes
         if (entry.changes && Array.isArray(entry.changes)) {
           for (const change of entry.changes) {
             if (change.field !== "messages") continue;
             const senderId = change.value?.sender?.id;
             const messageText = change.value?.message?.text;
             if (!senderId || !messageText) continue;
-            console.log(`[Meta Webhook] Instagram - Sender ID: ${senderId}, Message: ${messageText}`);
-            
+
+            const isInstagram = body.object === "instagram";
+            const platform = isInstagram ? "Instagram" : "Facebook";
+            const accessToken = isInstagram
+              ? process.env.INSTAGRAM_ACCESS_TOKEN
+              : process.env.PAGE_ACCESS_TOKEN;
+            const memoryPrefix = isInstagram ? "instagram" : "facebook";
+
+            console.log(`[Meta Webhook] ${platform} - Sender ID: ${senderId}, Message: ${messageText}`);
+
             try {
               if (supabase) {
                 // Get or create instagram user record
@@ -1186,7 +1166,7 @@ async function startServer() {
                   if (igUser.ai_mode === 'manual') {
                     console.log(`[Meta Webhook] Manual mode for ${senderId} — skipping AI reply`);
                     await sendTelegramMessage(
-                      `📩 <b>New Instagram DM (Manual Mode)</b>\n👤 Sender ID: <code>${senderId}</code>\n💬 Message: ${messageText}`
+                      `📩 <b>New ${platform} DM (Manual Mode)</b>\n👤 Sender ID: <code>${senderId}</code>\n💬 Message: ${messageText}`
                     );
                     continue;
                   }
@@ -1198,7 +1178,7 @@ async function startServer() {
                     await axios.post(
                       `https://graph.facebook.com/v22.0/me/messages`,
                       { recipient: { id: senderId }, message: { text: capMessage } },
-                      { params: { access_token: process.env.INSTAGRAM_ACCESS_TOKEN } }
+                      { params: { access_token: accessToken } }
                     );
                     console.log(`[Meta Webhook] Daily cap reached for ${senderId}`);
                     continue;
@@ -1212,21 +1192,20 @@ async function startServer() {
                 }
               }
 
-              const memoryContext = await getOrCreateMemory(`instagram_${senderId}`);
-              const reply = await generateGeminiReply(messageText, memoryContext, `instagram_${senderId}`);
-              const igToken = process.env.INSTAGRAM_ACCESS_TOKEN;
+              const memoryContext = await getOrCreateMemory(`${memoryPrefix}_${senderId}`);
+              const reply = await generateGeminiReply(messageText, memoryContext, `${memoryPrefix}_${senderId}`);
               await fetch(`https://graph.facebook.com/v22.0/me/messages`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                   recipient: { id: senderId },
                   message: { text: reply },
-                  access_token: igToken
+                  access_token: accessToken
                 })
               });
-              console.log(`[Meta Webhook] Instagram reply sent to ${senderId}`);
+              console.log(`[Meta Webhook] ${platform} reply sent to ${senderId}`);
             } catch (error) {
-              console.error(`[Meta Webhook] Instagram reply error:`, error);
+              console.error(`[Meta Webhook] ${platform} reply error:`, error);
             }
           }
         }
