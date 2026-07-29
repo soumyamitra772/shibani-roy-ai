@@ -1104,9 +1104,12 @@ async function startServer() {
   // Meta (Facebook Messenger & Instagram) Incoming Webhook Handler
   app.post("/webhook/meta", async (req, res) => {
     console.log("[Meta Webhook] RAW HIT:", JSON.stringify(req.body, null, 2));
+    console.log("[Meta Webhook] Object type:", req.body?.object);
+
     const body = req.body;
 
     if (!body || (body.object !== "page" && body.object !== "instagram")) {
+      console.log("[Meta Webhook] REJECTED - object type not matched:", body?.object);
       return res.sendStatus(404);
     }
 
