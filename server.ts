@@ -1118,6 +1118,42 @@ async function startServer() {
     if (body.entry && Array.isArray(body.entry)) {
       for (const entry of body.entry) {
 
+        const messagingEvents = entry.messaging;
+        if (messagingEvents && Array.isArray(messagingEvents)) {
+          for (const event of messagingEvents) {
+            const senderId = event.sender?.id;
+            const messageText = event.message?.text;
+            const isInstagram = body.object === "instagram";
+            
+            if (!senderId || !messageText) continue;
+            
+            console.log(`[Meta Webhook] ${isInstagram ? 'Instagram' : 'Facebook'} - Sender ID: ${senderId}, Message: ${messageText}`);
+            
+            try {
+              const memoryContext = await getOrCreateMemory(`${isInstagram ? 'instagram' : 'facebook'}_${senderId}`);
+              const reply = await generateGeminiReply(messageText, memoryContext, `${isInstagram ? 'instagram' : 'facebook'}_${senderId}`);
+              
+              const accessToken = isInstagram 
+                ? process.env.INSTAGRAM_ACCESS_TOKEN 
+                : process.env.PAGE_ACCESS_TOKEN;
+              
+              await fetch(`https://graph.facebook.com/v22.0/me/messages`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  recipient: { id: senderId },
+                  message: { text: reply },
+                  access_token: accessToken
+                })
+              });
+              
+              console.log(`[Meta Webhook] Reply sent to ${senderId}`);
+            } catch (error) {
+              console.error(`[Meta Webhook] Reply error:`, error);
+            }
+          }
+        }
+
         // Handle both Facebook and Instagram via entry.changes
         if (entry.changes && Array.isArray(entry.changes)) {
           for (const change of entry.changes) {
