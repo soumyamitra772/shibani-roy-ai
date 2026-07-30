@@ -245,9 +245,9 @@ async function generateGeminiReply(messageText: string, memoryContext: MemoryIte
   return response?.text || "Hey! I'm Shibani. How can I help you today? 😊";
 }
 
-async function sendTelegramMessage(text: string) {
+async function sendTelegramMessage(text: string, overrideChatId?: string) {
   const botToken = process.env.TELEGRAM_BOT_TOKEN;
-  const chatId = process.env.TELEGRAM_CHAT_ID;
+  const chatId = overrideChatId || process.env.TELEGRAM_ADMIN_CHAT_ID || process.env.TELEGRAM_CHAT_ID;
   await axios.post(`https://api.telegram.org/bot${botToken}/sendMessage`, {
     chat_id: chatId,
     text,
@@ -1153,6 +1153,9 @@ async function startServer() {
             const isInstagram = body.object === "instagram";
             
             if (!senderId || !messageText) continue;
+
+            const SHIBANI_INSTAGRAM_ID = "17841477068209321";
+            if (senderId === SHIBANI_INSTAGRAM_ID) continue;
             
             console.log(`[Meta Webhook] ${isInstagram ? 'Instagram' : 'Facebook'} - Sender ID: ${senderId}, Message: ${messageText}`);
             
@@ -1216,6 +1219,9 @@ async function startServer() {
 
             if (!senderId || !messageText) continue;
 
+            const SHIBANI_INSTAGRAM_ID = "17841477068209321";
+            if (senderId === SHIBANI_INSTAGRAM_ID) continue;
+
             const isInstagram = body.object === "instagram";
             const platform = isInstagram ? "Instagram" : "Facebook";
             const accessToken = isInstagram
@@ -1258,8 +1264,10 @@ async function startServer() {
                   // Check if manual mode
                   if (igUser.ai_mode === 'manual') {
                     console.log(`[Meta Webhook] Manual mode for ${senderId} — skipping AI reply`);
+                    const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID;
                     await sendTelegramMessage(
-                      `📩 <b>New ${platform} DM (Manual Mode)</b>\n👤 Sender ID: <code>${senderId}</code>\n💬 Message: ${messageText}`
+                      `📩 <b>Instagram DM (Manual Mode)</b>\n👤 User: <code>${senderId}</code>\n💬 Message: ${messageText}`,
+                      adminChatId
                     );
                     continue;
                   }
@@ -1349,10 +1357,24 @@ async function startServer() {
       }
     }
 
+    // /subscribe <user_id>
+    else if (text?.startsWith('/subscribe ')) {
+      const userId = text.split(' ')[1];
+      await supabase.from('instagram_users').upsert({ user_id: userId, is_subscriber: true });
+      await sendTelegramMessage(`✅ <code>${userId}</code> is now a <b>subscriber</b> with unlimited access!`);
+    }
+
+    // /unsubscribe <user_id>
+    else if (text?.startsWith('/unsubscribe ')) {
+      const userId = text.split(' ')[1];
+      await supabase.from('instagram_users').upsert({ user_id: userId, is_subscriber: false });
+      await sendTelegramMessage(`❌ <code>${userId}</code> is no longer a subscriber.`);
+    }
+
     // /help
     else if (text === '/help') {
       await sendTelegramMessage(
-        `<b>Shibani Admin Commands:</b>\n\n/manual &lt;user_id&gt; — Switch to manual mode\n/auto &lt;user_id&gt; — Switch to auto mode\n/status &lt;user_id&gt; — Check user status\n/help — Show this message`
+        `<b>Shibani Admin Commands:</b>\n\n/manual &lt;user_id&gt; — Switch to manual mode\n/auto &lt;user_id&gt; — Switch to auto mode\n/status &lt;user_id&gt; — Check user status\n/subscribe &lt;user_id&gt; — Grant subscriber status\n/unsubscribe &lt;user_id&gt; — Revoke subscriber status\n/help — Show this message`
       );
     }
 
