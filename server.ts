@@ -1122,7 +1122,34 @@ async function startServer() {
         if (messagingEvents && Array.isArray(messagingEvents)) {
           for (const event of messagingEvents) {
             const senderId = event.sender?.id;
-            const messageText = event.message?.text;
+            const messageText = event.message?.text || (() => {
+              const attachments = event.message?.attachments;
+              if (!attachments || !attachments.length) return null;
+              
+              const attachment = attachments[0];
+              const type = attachment?.type;
+              
+              if (type === 'ig_reel' || type === 'video') {
+                return "Someone shared a reel or video with you!";
+              } else if (type === 'photo' || type === 'image') {
+                return "Someone shared a photo with you!";
+              } else if (type === 'story_mention') {
+                return "Someone mentioned you in their story!";
+              } else if (type === 'story_reply') {
+                return "Someone replied to your story!";
+              } else if (type === 'share') {
+                return "Someone shared something with you!";
+              } else {
+                return "Someone sent you a message!";
+              }
+            })();
+
+            // Story mention
+            const storyMention = event.message?.attachments?.find((a: any) => a.type === 'story_mention');
+            if (storyMention) {
+              // Already handled above via messageText
+            }
+
             const isInstagram = body.object === "instagram";
             
             if (!senderId || !messageText) continue;
@@ -1159,7 +1186,34 @@ async function startServer() {
           for (const change of entry.changes) {
             if (change.field !== "messages") continue;
             const senderId = change.value?.sender?.id;
-            const messageText = change.value?.message?.text;
+            const messageText = change.value?.message?.text || (() => {
+              const attachments = change.value?.message?.attachments;
+              if (!attachments || !attachments.length) return null;
+              
+              const attachment = attachments[0];
+              const type = attachment?.type;
+              
+              if (type === 'ig_reel' || type === 'video') {
+                return "Someone shared a reel or video with you!";
+              } else if (type === 'photo' || type === 'image') {
+                return "Someone shared a photo with you!";
+              } else if (type === 'story_mention') {
+                return "Someone mentioned you in their story!";
+              } else if (type === 'story_reply') {
+                return "Someone replied to your story!";
+              } else if (type === 'share') {
+                return "Someone shared something with you!";
+              } else {
+                return "Someone sent you a message!";
+              }
+            })();
+
+            // Story mention
+            const storyMention = change.value?.message?.attachments?.find((a: any) => a.type === 'story_mention');
+            if (storyMention) {
+              // Already handled above via messageText
+            }
+
             if (!senderId || !messageText) continue;
 
             const isInstagram = body.object === "instagram";
