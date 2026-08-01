@@ -1160,6 +1160,30 @@ async function startServer() {
             console.log(`[Meta Webhook] ${isInstagram ? 'Instagram' : 'Facebook'} - Sender ID: ${senderId}, Message: ${messageText}`);
             
             try {
+              const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID;
+              const platform = body.object === 'instagram' ? '📸 Instagram' : '📘 Facebook';
+
+              // Get subscriber status
+              const { data: igUserSub } = supabase ? await supabase
+                .from('instagram_users')
+                .select('is_subscriber, message_count')
+                .eq('user_id', senderId)
+                .single() : { data: null };
+
+              const isSubscriber = igUserSub?.is_subscriber === true;
+
+              // Notify admin on Telegram
+              if (adminChatId && senderId && messageText) {
+                await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    chat_id: adminChatId,
+                    text: `${platform} ${isSubscriber ? '💎 Subscriber' : '👤 Free User'}\n\n🆔 <code>${senderId}</code>\n💬 ${messageText}\n\n${isSubscriber ? '✅ Unlimited access' : `📊 Messages today: ${(igUserSub?.message_count || 0) + 1}/10`}\n\nTo subscribe: /subscribe ${senderId}\nTo go manual: /manual ${senderId}`,
+                    parse_mode: 'HTML'
+                  })
+                });
+              }
               if (supabase) {
                 // Get or create instagram user record
                 let { data: igUser, error } = await supabase
@@ -1296,6 +1320,30 @@ async function startServer() {
             console.log(`[Meta Webhook] ${platform} - Sender ID: ${senderId}, Message: ${messageText}`);
 
             try {
+              const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID;
+              const platformLabel = body.object === 'instagram' ? '📸 Instagram' : '📘 Facebook';
+
+              // Get subscriber status
+              const { data: igUserSub } = supabase ? await supabase
+                .from('instagram_users')
+                .select('is_subscriber, message_count')
+                .eq('user_id', senderId)
+                .single() : { data: null };
+
+              const isSubscriber = igUserSub?.is_subscriber === true;
+
+              // Notify admin on Telegram
+              if (adminChatId && senderId && messageText) {
+                await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    chat_id: adminChatId,
+                    text: `${platformLabel} ${isSubscriber ? '💎 Subscriber' : '👤 Free User'}\n\n🆔 <code>${senderId}</code>\n💬 ${messageText}\n\n${isSubscriber ? '✅ Unlimited access' : `📊 Messages today: ${(igUserSub?.message_count || 0) + 1}/10`}\n\nTo subscribe: /subscribe ${senderId}\nTo go manual: /manual ${senderId}`,
+                    parse_mode: 'HTML'
+                  })
+                });
+              }
               if (supabase) {
                 // Get or create instagram user record
                 let { data: igUser, error } = await supabase
@@ -1386,9 +1434,10 @@ async function startServer() {
     const message = body?.message;
     const text = message?.text?.trim();
     const chatId = message?.chat?.id?.toString();
+    const adminChatId = process.env.TELEGRAM_ADMIN_CHAT_ID || process.env.TELEGRAM_CHAT_ID || chatId;
 
     // Only respond to your own chat
-    if (chatId !== process.env.TELEGRAM_CHAT_ID) {
+    if (chatId !== process.env.TELEGRAM_CHAT_ID && chatId !== process.env.TELEGRAM_ADMIN_CHAT_ID) {
       return res.sendStatus(403);
     }
 
@@ -1435,10 +1484,46 @@ async function startServer() {
       await sendTelegramMessage(`❌ <code>${userId}</code> is no longer a subscriber.`);
     }
 
+    // /pauseall
+    else if (text === '/pauseall') {
+      await supabase
+        .from('instagram_users')
+        .update({ ai_mode: 'manual' })
+        .neq('user_id', '');
+      
+      await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: adminChatId,
+          text: '⏸️ Auto-reply PAUSED for ALL users. Shibani is now in full manual mode.',
+          parse_mode: 'HTML'
+        })
+      });
+    }
+
+    // /resumeall
+    else if (text === '/resumeall') {
+      await supabase
+        .from('instagram_users')
+        .update({ ai_mode: 'auto' })
+        .neq('user_id', '');
+      
+      await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: adminChatId,
+          text: '▶️ Auto-reply RESUMED for ALL users. Shibani is back online!',
+          parse_mode: 'HTML'
+        })
+      });
+    }
+
     // /help
     else if (text === '/help') {
       await sendTelegramMessage(
-        `<b>Shibani Admin Commands:</b>\n\n/manual &lt;user_id&gt; — Switch to manual mode\n/auto &lt;user_id&gt; — Switch to auto mode\n/status &lt;user_id&gt; — Check user status\n/subscribe &lt;user_id&gt; — Grant subscriber status\n/unsubscribe &lt;user_id&gt; — Revoke subscriber status\n/help — Show this message`
+        `<b>Shibani Admin Commands:</b>\n\n/manual &lt;user_id&gt; — Switch to manual mode\n/auto &lt;user_id&gt; — Switch to auto mode\n/status &lt;user_id&gt; — Check user status\n/subscribe &lt;user_id&gt; — Grant subscriber status\n/unsubscribe &lt;user_id&gt; — Revoke subscriber status\n/pauseall — Pause auto-reply for all users\n/resumeall — Resume auto-reply for all users\n/help — Show this message`
       );
     }
 
