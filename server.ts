@@ -955,6 +955,28 @@ async function startServer() {
     return ADMIN_USER_IDS.includes(userId);
   }
 
+  // Check if user has an active Pro subscription in Supabase
+  async function isPro(userId: string): Promise<boolean> {
+    if (isAdmin(userId)) return true;
+    if (!supabase) return false;
+    try {
+      const { data, error } = await supabase
+        .from("subscriptions")
+        .select("status")
+        .eq("user_id", userId)
+        .in("status", ["active", "trialing"])
+        .maybeSingle();
+      if (error) {
+        console.warn("[isPro] Supabase error:", error.message || error);
+        return false;
+      }
+      return !!data;
+    } catch (err) {
+      console.warn("[isPro] Error checking subscription:", err);
+      return false;
+    }
+  }
+
   // Helper for daily usage limits
   const inMemoryUsage = new Map<string, { images_generated: number; tool_calls: number; voice_minutes: number; chat_messages: number }>();
 
@@ -970,6 +992,8 @@ async function startServer() {
     if (isAdmin(userId)) {
       return { allowed: true, message: "OK" };
     }
+
+    const userIsPro = await isPro(userId);
 
     const today = getKolkataDateString();
     const key = `${userId}:${today}`;
@@ -1015,36 +1039,51 @@ async function startServer() {
       currentChat = mem.chat_messages || 0;
     }
 
-    // Free limits check
-    if (type === "image") {
-      const IMAGE_LIMIT = 5;
-      if (currentImages >= IMAGE_LIMIT) {
-        return {
-          allowed: false,
-          message: "Daily free limit reached. Upgrade coming soon!",
-        };
+    if (userIsPro) {
+      // Pro tier has daily quotas too — check and increment
+      if (type === "image") {
+        const PRO_IMAGE_LIMIT = 1;
+        if (currentImages >= PRO_IMAGE_LIMIT) {
+          return { allowed: false, message: "PRO_IMAGE_LIMIT_REACHED" };
+        }
+      } else if (type === "tool") {
+        const PRO_TOOL_LIMIT = 20;
+        if (currentTools >= PRO_TOOL_LIMIT) {
+          return { allowed: false, message: "PRO_TOOL_LIMIT_REACHED" };
+        }
+      } else if (type === "chat") {
+        const PRO_CHAT_LIMIT = 200;
+        if (currentChat >= PRO_CHAT_LIMIT) {
+          return { allowed: false, message: "PRO_CHAT_LIMIT_REACHED" };
+        }
       }
-    } else if (type === "tool") {
-      const TOOL_LIMIT = 30;
-      if (currentTools >= TOOL_LIMIT) {
+      // If within limits, fall through to the increment logic below
+    } else {
+      // Free tier limits — Pro users already checked above
+      if (type === "image") {
         return {
           allowed: false,
-          message: "Daily free limit reached. Upgrade coming soon!",
+          message: "IMAGE_LOCKED",
         };
-      }
-    } else if (type === "chat") {
-      const CHAT_LIMIT = 50;
-      if (currentChat >= CHAT_LIMIT) {
+      } else if (type === "tool") {
         return {
           allowed: false,
-          message: "Daily free limit reached. Upgrade coming soon!",
+          message: "TOOL_LOCKED",
         };
+      } else if (type === "chat") {
+        const CHAT_LIMIT = 10;
+        if (currentChat >= CHAT_LIMIT) {
+          return {
+            allowed: false,
+            message: "CHAT_LIMIT_REACHED",
+          };
+        }
       }
     }
 
-    const newImages = type === "image" ? currentImages + 1 : currentImages;
-    const newTools = type === "tool" ? currentTools + 1 : currentTools;
-    const newChat = type === "chat" ? currentChat + 1 : currentChat;
+    const newImages = (type as string) === "image" ? currentImages + 1 : currentImages;
+    const newTools = (type as string) === "tool" ? currentTools + 1 : currentTools;
+    const newChat = (type as string) === "chat" ? currentChat + 1 : currentChat;
 
     inMemoryUsage.set(key, {
       images_generated: newImages,
@@ -1600,9 +1639,23 @@ async function startServer() {
       // Optimize contents to merge consecutive roles and ensure pristine schemas
       const contents = optimizeContents(rawContents);
 
-      // Fetch user's existing memories
-      const memories = userId ? await recallFactsFromDb(String(userId)) : [];
+      // Determine if user is Pro — controls which tools and features are available
+      const userIsProOrAdmin = isAdmin(userId) || await isPro(userId);
+
+      // Fetch user's existing memories (Pro-only feature)
+      const memories = userIsProOrAdmin && userId ? await recallFactsFromDb(String(userId)) : [];
       const systemInstruction = getSystemInstruction(memories);
+
+      // Free users get a stripped-down tool set (no search, music, images, memory)
+      const PRO_ONLY_TOOLS = new Set([
+        "searchWeb", "getLatestNews", "getWeather",
+        "playMusic", "pauseMusic", "resumeMusic", "nextTrack", "previousTrack",
+        "setVolume", "setPlaybackState", "recommendSongByMood",
+        "generateImage", "rememberFact", "recallFacts",
+      ]);
+      const availableDeclarations = userIsProOrAdmin
+        ? FUNCTION_DECLARATIONS
+        : FUNCTION_DECLARATIONS.filter((d: any) => !PRO_ONLY_TOOLS.has(d.name));
 
       // Set headers for SSE streaming
       res.setHeader("Content-Type", "text/event-stream");
@@ -1618,7 +1671,7 @@ async function startServer() {
             contents: contents,
             config: {
               systemInstruction: systemInstruction,
-              tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }],
+              tools: [{ functionDeclarations: availableDeclarations }],
               temperature: 0.85,
             }
           });
@@ -1988,6 +2041,9 @@ async function startServer() {
   // REST API Route to save a long-term memory fact
   app.post("/api/memories/remember", requireAuth, async (req, res) => {
     const userId = (req as any).userId;
+    if (!isAdmin(userId) && !(await isPro(userId))) {
+      return res.status(403).json({ error: "MEMORY_LOCKED" });
+    }
     const { fact, category } = req.body;
     if (!fact) {
       return res.status(400).json({ error: "Missing required field 'fact'." });
@@ -1999,6 +2055,9 @@ async function startServer() {
   // REST API Route to retrieve long-term memories for a user
   app.get("/api/memories/recall", requireAuth, async (req, res) => {
     const userId = (req as any).userId;
+    if (!isAdmin(userId) && !(await isPro(userId))) {
+      return res.status(403).json({ error: "MEMORY_LOCKED" });
+    }
     const memories = await recallFactsFromDb(String(userId));
     res.json({ memories });
   });
@@ -2041,6 +2100,7 @@ async function startServer() {
     let session: any = null;
     let isAuthenticated = false;
     let userId = "anonymous-user";
+    let voiceSessionStart = 0;
 
     const authTimeout = setTimeout(() => {
       if (!isAuthenticated) {
@@ -2077,9 +2137,51 @@ async function startServer() {
 
             isAuthenticated = true;
 
+            // Check voice minute quota before connecting
+            const voiceToday = getKolkataDateString();
+            const VOICE_LIMIT_FREE = 5;
+            const VOICE_LIMIT_PRO = 30;
+
+            // Read current voice usage
+            let currentVoiceMinutes = 0;
+            if (supabase) {
+              try {
+                const { data: voiceData } = await supabase
+                  .from("user_usage")
+                  .select("voice_minutes")
+                  .eq("user_id", userId)
+                  .eq("date", voiceToday)
+                  .maybeSingle();
+                if (voiceData) currentVoiceMinutes = Number(voiceData.voice_minutes) || 0;
+              } catch (e) { /* ignore */ }
+            }
+
+            const voiceIsProOrAdmin = isAdmin(userId) || await isPro(userId);
+            const voiceLimit = voiceIsProOrAdmin ? VOICE_LIMIT_PRO : VOICE_LIMIT_FREE;
+
+            if (currentVoiceMinutes >= voiceLimit) {
+              clientWs.send(JSON.stringify({ type: "error", message: "VOICE_LIMIT_REACHED" }));
+              clientWs.close();
+              return;
+            }
+
+            // Track session start time so we can record duration on disconnect
+            voiceSessionStart = Date.now();
+
             try {
-              const memories = await recallFactsFromDb(userId);
-              const systemInstruction = getSystemInstruction(memories);
+              const wsUserIsProOrAdmin = isAdmin(userId) || await isPro(userId);
+              const wsMemories = wsUserIsProOrAdmin ? await recallFactsFromDb(userId) : [];
+              const systemInstruction = getSystemInstruction(wsMemories);
+
+              const WS_PRO_ONLY_TOOLS = new Set([
+                "searchWeb", "getLatestNews", "getWeather",
+                "playMusic", "pauseMusic", "resumeMusic", "nextTrack", "previousTrack",
+                "setVolume", "setPlaybackState", "recommendSongByMood",
+                "generateImage", "rememberFact", "recallFacts",
+              ]);
+              const wsAvailableDeclarations = wsUserIsProOrAdmin
+                ? FUNCTION_DECLARATIONS
+                : FUNCTION_DECLARATIONS.filter((d: any) => !WS_PRO_ONLY_TOOLS.has(d.name));
 
               session = await ai.live.connect({
                 model: "gemini-3.1-flash-live-preview",
@@ -2089,7 +2191,7 @@ async function startServer() {
                     voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } }, // Aoede (Female) matches Shibani
                   },
                   systemInstruction: systemInstruction,
-                  tools: [{ functionDeclarations: FUNCTION_DECLARATIONS }]
+                  tools: [{ functionDeclarations: wsAvailableDeclarations }]
                 },
                 callbacks: {
                   onmessage: (message: any) => {
@@ -2177,7 +2279,7 @@ async function startServer() {
       }
     });
 
-    clientWs.on("close", () => {
+    clientWs.on("close", async () => {
       clearTimeout(authTimeout);
       console.log("Client WS closed, cleaning up Gemini Live session");
       if (session) {
@@ -2185,6 +2287,34 @@ async function startServer() {
           session.close();
         } catch (e) {
           console.error("Error closing Gemini session:", e);
+        }
+      }
+
+      // Record voice minutes used in this session
+      if (voiceSessionStart > 0) {
+        const voiceMinutesUsed = Math.ceil((Date.now() - voiceSessionStart) / 60000);
+        if (voiceMinutesUsed > 0 && supabase) {
+          try {
+            const voiceDate = getKolkataDateString();
+            const { data: existing } = await supabase
+              .from("user_usage")
+              .select("voice_minutes")
+              .eq("user_id", userId)
+              .eq("date", voiceDate)
+              .maybeSingle();
+            const prevMinutes = existing ? Number(existing.voice_minutes) || 0 : 0;
+            await supabase.from("user_usage").upsert(
+              {
+                user_id: userId,
+                date: voiceDate,
+                voice_minutes: prevMinutes + voiceMinutesUsed,
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: "user_id,date" }
+            );
+          } catch (e) {
+            console.warn("[Voice] Failed to record voice minutes:", e);
+          }
         }
       }
     });
