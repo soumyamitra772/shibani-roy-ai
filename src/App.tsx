@@ -250,6 +250,32 @@ export default function App() {
   // Supabase Auth integration states via secure backend proxy
   const [session, setSession] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [isPro, setIsPro] = useState<boolean>(false);
+
+  const fetchUserStatus = async () => {
+    try {
+      const token = session?.access_token;
+      const res = await fetch("/api/user-status", {
+        headers: {
+          Authorization: token ? `Bearer ${token}` : "",
+        },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setIsPro(!!data.isPro);
+      }
+    } catch (e) {
+      console.warn("Failed to fetch user status:", e);
+    }
+  };
+
+  useEffect(() => {
+    if (session) {
+      fetchUserStatus();
+    } else {
+      setIsPro(false);
+    }
+  }, [session]);
 
   // States for Shibani image generation
   const [latestVoiceImage, setLatestVoiceImage] = useState<{ url: string; prompt: string } | null>(null);
@@ -878,6 +904,8 @@ export default function App() {
           onLogout={handleLogout} 
           avatarPreference={avatarPreference}
           onAvatarPreferenceChange={handleAvatarPreferenceChange}
+          isPro={isPro}
+          onUpgradeClick={() => setShowUpgradeModal(true)}
         />
 
         {!session ? (
@@ -1031,7 +1059,10 @@ export default function App() {
           <UpgradeModal
             session={session}
             onClose={() => setShowUpgradeModal(false)}
-            onSuccess={() => triggerNotification("Successfully upgraded to Pro! 🎉", "success")}
+            onSuccess={() => {
+              triggerNotification("Successfully upgraded to Pro! 🎉", "success");
+              fetchUserStatus();
+            }}
             onError={(msg) => triggerNotification(msg, "error")}
           />
         )}

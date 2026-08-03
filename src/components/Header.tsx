@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Mic, MessageSquare, Radio, Github, Palette, LogOut, Camera } from "lucide-react";
+import { Mic, MessageSquare, Radio, Github, Palette, LogOut, Camera, Sparkles } from "lucide-react";
 import { InteractionMode, AssistantState } from "../types";
 import { ThemeId, THEMES } from "../utils/themes";
 
@@ -14,6 +14,8 @@ interface HeaderProps {
   onLogout: () => void;
   avatarPreference: string;
   onAvatarPreferenceChange: (pref: string) => void;
+  isPro?: boolean;
+  onUpgradeClick?: () => void;
 }
 
 export default function Header({ 
@@ -25,7 +27,9 @@ export default function Header({
   session, 
   onLogout,
   avatarPreference,
-  onAvatarPreferenceChange
+  onAvatarPreferenceChange,
+  isPro = false,
+  onUpgradeClick,
 }: HeaderProps) {
   const [showLooks, setShowLooks] = useState(false);
 
@@ -63,9 +67,15 @@ export default function Header({
             <h1 className="text-2xl font-bold font-sans tracking-tight bg-gradient-to-r from-white via-rose-100 to-pink-200 bg-clip-text text-transparent">
               Shibani Roy
             </h1>
-            <span className={`flex items-center gap-1 px-2 py-0.5 rounded border ${activeTheme.badgeClass} font-mono text-[9px] uppercase tracking-widest`}>
-              AI Companion
-            </span>
+            {isPro ? (
+              <span className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-gradient-to-r from-amber-500/20 to-yellow-500/20 border border-amber-500/40 text-amber-300 font-mono text-[9px] font-bold uppercase tracking-wider shadow-[0_0_10px_rgba(245,158,11,0.2)]">
+                ⭐ Pro
+              </span>
+            ) : (
+              <span className={`flex items-center gap-1 px-2 py-0.5 rounded border ${activeTheme.badgeClass} font-mono text-[9px] uppercase tracking-widest`}>
+                AI Companion
+              </span>
+            )}
           </div>
           <p className="text-xs text-gray-400 mt-1">
             Created by <span className="font-medium text-gray-300 hover:text-rose-300 transition-colors">Soumya Mitra</span> (সৌম্য মিত্র)
@@ -90,6 +100,18 @@ export default function Header({
               ))}
             </select>
           </div>
+
+          {/* Proactive Upgrade Button for logged-in free users */}
+          {session && !isPro && onUpgradeClick && (
+            <button
+              onClick={onUpgradeClick}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-gradient-to-r from-amber-400 via-amber-500 to-yellow-500 hover:from-amber-300 hover:to-yellow-400 text-black font-bold text-xs shadow-md shadow-amber-500/20 hover:scale-[1.03] active:scale-95 transition-all duration-300 cursor-pointer font-sans shrink-0"
+              title="Upgrade to Pro Access"
+            >
+              <Sparkles className="w-3.5 h-3.5 fill-black text-black" />
+              <span>Upgrade to Pro ⭐</span>
+            </button>
+          )}
 
           {/* Choose Look Button */}
           {session && (

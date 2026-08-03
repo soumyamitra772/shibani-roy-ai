@@ -2279,6 +2279,12 @@ async function startServer() {
     return res.json({ isPro: pro, userId });
   });
 
+  app.get("/api/user-status", requireAuth, async (req, res) => {
+    const userId = (req as any).userId;
+    const pro = await isPro(userId);
+    return res.json({ isPro: pro, userId });
+  });
+
   // Setup WebSocket Server for Gemini Live API
   const wss = new WebSocketServer({ server, path: "/api/live-ws" });
 
