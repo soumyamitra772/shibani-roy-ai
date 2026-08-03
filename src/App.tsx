@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Mic, MessageSquare, Sparkles, Volume2, ShieldCheck, Heart, AlertCircle, Info, X, Download } from "lucide-react";
+import { Mic, MessageSquare, Sparkles, Volume2, ShieldCheck, Heart, AlertCircle, Info, X, Download, Loader2 } from "lucide-react";
 import Header from "./components/Header";
 import VoiceVisualizer from "./components/VoiceVisualizer";
 import ChatWindow from "./components/ChatWindow";
@@ -19,6 +19,223 @@ import LoginScreen from "./components/LoginScreen";
 import { supabase } from "./utils/supabaseClient";
 import { getActiveAvatar, getAvatarPreference, saveAvatarPreference } from "./utils/avatarUtils";
 
+interface UpgradeModalProps {
+  session: any;
+  onClose: () => void;
+  onSuccess: () => void;
+  onError: (msg: string) => void;
+}
+
+function UpgradeModal({ session, onClose, onSuccess, onError }: UpgradeModalProps) {
+  const [selectedPlan, setSelectedPlan] = useState<"monthly" | "yearly">("yearly");
+  const [loading, setLoading] = useState(false);
+
+  const loadRazorpayScript = (): Promise<boolean> => {
+    return new Promise((resolve) => {
+      if ((window as any).Razorpay) {
+        resolve(true);
+        return;
+      }
+      const script = document.createElement("script");
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      script.onload = () => resolve(true);
+      script.onerror = () => resolve(false);
+      document.body.appendChild(script);
+    });
+  };
+
+  const handleUpgrade = async () => {
+    setLoading(true);
+    try {
+      const isLoaded = await loadRazorpayScript();
+      if (!isLoaded) {
+        throw new Error("Failed to load Razorpay payment SDK. Please check network connection.");
+      }
+
+      const planId = selectedPlan === "monthly" ? "plan_TLKcmhornkOwH6" : "plan_TLKnHmEPZWLSqg";
+      const token = session?.access_token;
+
+      const response = await fetch("/api/create-subscription", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: token ? `Bearer ${token}` : "",
+        },
+        body: JSON.stringify({ planId }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.subscription_id) {
+        throw new Error(data.error || "Failed to create Razorpay subscription.");
+      }
+
+      const options = {
+        key: data.key_id || "rzp_live_TLLam8g5sMqLCx",
+        subscription_id: data.subscription_id,
+        name: "Shibani Roy AI",
+        description: selectedPlan === "monthly" ? "Pro Monthly Subscription" : "Pro Yearly Subscription",
+        image: "https://lkxxnumhlcdbqknmulmu.supabase.co/storage/v1/object/public/avatars/look-1.jpg",
+        handler: async function (paymentResponse: any) {
+          try {
+            const verifyRes = await fetch("/api/verify-subscription", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: token ? `Bearer ${token}` : "",
+              },
+              body: JSON.stringify({
+                subscription_id: paymentResponse.razorpay_subscription_id,
+                payment_id: paymentResponse.razorpay_payment_id,
+              }),
+            });
+            const verifyData = await verifyRes.json();
+            if (verifyRes.ok && verifyData.success) {
+              onSuccess();
+              onClose();
+            } else {
+              onError("Payment captured, but database verification failed.");
+            }
+          } catch (err: any) {
+            console.error("[Razorpay Verification Error]:", err);
+            onSuccess();
+            onClose();
+          }
+        },
+        prefill: {
+          email: session?.user?.email || "",
+        },
+        theme: {
+          color: "#f43f5e",
+        },
+      };
+
+      const rzp = new (window as any).Razorpay(options);
+      rzp.on("payment.failed", function (failResponse: any) {
+        console.error("Payment failed:", failResponse.error);
+        onError(failResponse.error?.description || "Payment failed or was cancelled.");
+        setLoading(false);
+      });
+
+      rzp.open();
+      setLoading(false);
+    } catch (err: any) {
+      console.error("[Razorpay Upgrade Error]:", err);
+      onError(err.message || "An error occurred while setting up payment.");
+      setLoading(false);
+    }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      onClick={onClose}
+      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4"
+    >
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.95, y: 20 }}
+        onClick={(e) => e.stopPropagation()}
+        className="relative w-full max-w-lg rounded-3xl border border-rose-500/20 bg-neutral-900/90 backdrop-blur-xl p-6 sm:p-8 shadow-2xl text-white overflow-hidden flex flex-col gap-6"
+      >
+        {/* Ambient glow accent */}
+        <div className="absolute -top-24 -right-24 w-48 h-48 rounded-full bg-rose-500/20 blur-3xl pointer-events-none" />
+        <div className="absolute -bottom-24 -left-24 w-48 h-48 rounded-full bg-pink-500/20 blur-3xl pointer-events-none" />
+
+        {/* Header */}
+        <div className="flex items-start justify-between">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <Sparkles className="w-5 h-5 text-rose-400" />
+              <h3 className="text-xl font-bold bg-gradient-to-r from-rose-300 via-pink-300 to-amber-200 bg-clip-text text-transparent">
+                Unlock Pro Access ✨
+              </h3>
+            </div>
+            <p className="text-xs text-gray-400 leading-relaxed">
+              You've reached your free limit. Upgrade to keep chatting with Shibani.
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-full hover:bg-white/10 text-gray-400 hover:text-white transition-colors cursor-pointer shrink-0"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Plan options - side by side */}
+        <div className="grid grid-cols-2 gap-3">
+          {/* Monthly */}
+          <div
+            onClick={() => setSelectedPlan("monthly")}
+            className={`relative p-4 rounded-2xl border cursor-pointer transition-all flex flex-col justify-between ${
+              selectedPlan === "monthly"
+                ? "border-rose-500 bg-rose-500/10 shadow-lg shadow-rose-500/10"
+                : "border-white/10 bg-white/[0.02] hover:bg-white/[0.05]"
+            }`}
+          >
+            <div>
+              <div className="text-xs font-semibold text-gray-300">Monthly</div>
+              <div className="text-lg font-bold text-white mt-1">₹349<span className="text-xs font-normal text-gray-400">/mo</span></div>
+            </div>
+            <p className="text-[11px] text-gray-400 mt-3 leading-tight">
+              200 chats/day, 30 min voice/day, 1 image/day, 20 web searches/day, music & memory unlimited
+            </p>
+          </div>
+
+          {/* Yearly */}
+          <div
+            onClick={() => setSelectedPlan("yearly")}
+            className={`relative p-4 rounded-2xl border cursor-pointer transition-all flex flex-col justify-between ${
+              selectedPlan === "yearly"
+                ? "border-rose-500 bg-rose-500/10 shadow-lg shadow-rose-500/10"
+                : "border-white/10 bg-white/[0.02] hover:bg-white/[0.05]"
+            }`}
+          >
+            <span className="absolute -top-2.5 right-3 px-2 py-0.5 rounded-full bg-gradient-to-r from-rose-500 to-pink-500 text-[10px] font-bold text-white shadow-md">
+              Save ₹1,189
+            </span>
+            <div>
+              <div className="text-xs font-semibold text-gray-300">Yearly</div>
+              <div className="text-lg font-bold text-white mt-1">₹2,999<span className="text-xs font-normal text-gray-400">/yr</span></div>
+            </div>
+            <p className="text-[11px] text-gray-400 mt-3 leading-tight">
+              200 chats/day, 30 min voice/day, 1 image/day, 20 web searches/day, music & memory unlimited
+            </p>
+          </div>
+        </div>
+
+        {/* Action button & link */}
+        <div className="flex flex-col gap-3 text-center">
+          <button
+            onClick={handleUpgrade}
+            disabled={loading}
+            className="w-full py-3 rounded-2xl bg-gradient-to-r from-rose-500 via-pink-500 to-rose-600 text-white font-semibold shadow-lg shadow-rose-500/25 hover:brightness-110 active:scale-[0.99] transition-all cursor-pointer text-sm flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                <span>Preparing Checkout...</span>
+              </>
+            ) : (
+              <span>Upgrade to Pro</span>
+            )}
+          </button>
+          <button
+            onClick={onClose}
+            className="text-xs text-gray-400 hover:text-gray-200 transition-colors cursor-pointer py-1"
+          >
+            Maybe Later
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
 export default function App() {
   const [theme, setTheme] = useState<ThemeId>(() => {
     const saved = localStorage.getItem("shibani-theme");
@@ -28,6 +245,7 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState<Message[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
   const [notification, setNotification] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
 
   // Supabase Auth integration states via secure backend proxy
   const [session, setSession] = useState<any>(null);
@@ -239,6 +457,24 @@ export default function App() {
     stopPlayback,
   } = useVoiceConnection({
     selectedMicId,
+    onVoiceError: (errorMsg) => {
+      if (
+        errorMsg === "VOICE_LIMIT_REACHED" ||
+        errorMsg === "TOOL_LOCKED" ||
+        errorMsg === "IMAGE_LOCKED" ||
+        errorMsg === "CHAT_LIMIT_REACHED"
+      ) {
+        setShowUpgradeModal(true);
+      } else if (
+        errorMsg === "PRO_IMAGE_LIMIT_REACHED" ||
+        errorMsg === "PRO_TOOL_LIMIT_REACHED" ||
+        errorMsg === "PRO_CHAT_LIMIT_REACHED"
+      ) {
+        triggerNotification("Daily limit reached. Resets at midnight IST 🌙", "info");
+      } else {
+        triggerNotification(errorMsg, "error");
+      }
+    },
     onToolCallExecuting: (name, args) => {
       if (name === "generateImage") {
         setIsVoiceGeneratingImage(true);
@@ -346,7 +582,12 @@ export default function App() {
         });
 
         if (!response.ok) {
-          throw new Error("Failed to connect to Shibani. Check API server.");
+          let errText = "";
+          try {
+            const errData = await response.json();
+            errText = errData.error || errData.message;
+          } catch (e) {}
+          throw new Error(errText || "Failed to connect to Shibani. Check API server.");
         }
 
         const replyTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -461,8 +702,22 @@ export default function App() {
               if (call.name === "generateImage") {
                 setIsChatGeneratingImage(false);
               }
-              // Trigger a subtle in-app floating banner for tool executions
-              triggerNotification(result.message, result.success ? "success" : "error");
+              // Trigger a subtle in-app floating banner for tool executions or open upgrade modal on limits
+              if (
+                result.message === "TOOL_LOCKED" ||
+                result.message === "IMAGE_LOCKED" ||
+                result.message === "CHAT_LIMIT_REACHED"
+              ) {
+                setShowUpgradeModal(true);
+              } else if (
+                result.message === "PRO_IMAGE_LIMIT_REACHED" ||
+                result.message === "PRO_TOOL_LIMIT_REACHED" ||
+                result.message === "PRO_CHAT_LIMIT_REACHED"
+              ) {
+                triggerNotification("Daily limit reached. Resets at midnight IST 🌙", "info");
+              } else {
+                triggerNotification(result.message, result.success ? "success" : "error");
+              }
               return result;
             })
           );
@@ -527,7 +782,22 @@ export default function App() {
 
     } catch (error: any) {
       console.error("[Chat] Error sending message:", error);
-      triggerNotification(error.message || "Failed to contact chat server", "error");
+      const msg = error.message || "";
+      if (
+        msg === "CHAT_LIMIT_REACHED" ||
+        msg === "TOOL_LOCKED" ||
+        msg === "IMAGE_LOCKED"
+      ) {
+        setShowUpgradeModal(true);
+      } else if (
+        msg === "PRO_IMAGE_LIMIT_REACHED" ||
+        msg === "PRO_TOOL_LIMIT_REACHED" ||
+        msg === "PRO_CHAT_LIMIT_REACHED"
+      ) {
+        triggerNotification("Daily limit reached. Resets at midnight IST 🌙", "info");
+      } else {
+        triggerNotification(msg || "Failed to contact chat server", "error");
+      }
     } finally {
       setChatLoading(false);
     }
@@ -754,6 +1024,18 @@ export default function App() {
 
       {/* Floating Smart Media Player */}
       <MusicPlayer />
+
+      {/* Upgrade Modal */}
+      <AnimatePresence>
+        {showUpgradeModal && (
+          <UpgradeModal
+            session={session}
+            onClose={() => setShowUpgradeModal(false)}
+            onSuccess={() => triggerNotification("Successfully upgraded to Pro! 🎉", "success")}
+            onError={(msg) => triggerNotification(msg, "error")}
+          />
+        )}
+      </AnimatePresence>
 
       {/* Floating System notifications */}
       <AnimatePresence>

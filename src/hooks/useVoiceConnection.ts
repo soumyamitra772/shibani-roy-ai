@@ -16,6 +16,7 @@ interface UseVoiceConnectionProps {
   onAssistantSpokeText?: (text: string) => void;
   onToolCallExecuting?: (name: string, args: any) => void;
   onToolCallCompleted?: (name: string, result: any) => void;
+  onVoiceError?: (errorMessage: string) => void;
   selectedMicId?: string;
 }
 
@@ -24,6 +25,7 @@ export function useVoiceConnection({
   onAssistantSpokeText,
   onToolCallExecuting,
   onToolCallCompleted,
+  onVoiceError,
   selectedMicId,
 }: UseVoiceConnectionProps = {}) {
   const [state, setState] = useState<AssistantState>("disconnected");
@@ -509,6 +511,9 @@ export function useVoiceConnection({
             case "error":
               console.error("[AudioEngine] Server error:", msg.message);
               setState("error");
+              if (onVoiceError) {
+                onVoiceError(msg.message);
+              }
               break;
           }
         } catch (err) {

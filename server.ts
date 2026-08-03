@@ -1,4 +1,5 @@
 import axios from "axios";
+import crypto from "crypto";
 import "./instrument";
 import * as Sentry from "@sentry/node";
 import express from "express";
@@ -962,7 +963,7 @@ async function startServer() {
     try {
       const { data, error } = await supabase
         .from("subscriptions")
-        .select("status")
+        .select("status, end_date")
         .eq("user_id", userId)
         .in("status", ["active", "trialing"])
         .maybeSingle();
@@ -970,7 +971,9 @@ async function startServer() {
         console.warn("[isPro] Supabase error:", error.message || error);
         return false;
       }
-      return !!data;
+      if (!data) return false;
+      if (data.end_date && new Date(data.end_date) < new Date()) return false;
+      return true;
     } catch (err) {
       console.warn("[isPro] Error checking subscription:", err);
       return false;
@@ -985,15 +988,33 @@ async function startServer() {
     return now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
   }
 
+  const UNLIMITED_PRO_TOOLS = new Set([
+    "playMusic",
+    "pauseMusic",
+    "resumeMusic",
+    "nextTrack",
+    "previousTrack",
+    "setVolume",
+    "setPlaybackState",
+    "recommendSongByMood",
+    "rememberFact",
+    "recallFacts",
+  ]);
+
   async function checkAndIncrementUsage(
     userId: string,
-    type: "image" | "tool" | "chat"
+    type: "image" | "tool" | "chat",
+    toolName?: string
   ): Promise<{ allowed: boolean; message: string }> {
     if (isAdmin(userId)) {
       return { allowed: true, message: "OK" };
     }
 
     const userIsPro = await isPro(userId);
+
+    if (type === "tool" && toolName && UNLIMITED_PRO_TOOLS.has(toolName) && userIsPro) {
+      return { allowed: true, message: "OK" };
+    }
 
     const today = getKolkataDateString();
     const key = `${userId}:${today}`;
@@ -1922,7 +1943,7 @@ async function startServer() {
   // REST API Route for real-time Weather
   app.get("/api/tools/weather", requireAuth, async (req, res) => {
     const userId = (req as any).userId || "dev-user";
-    const usage = await checkAndIncrementUsage(userId, "tool");
+    const usage = await checkAndIncrementUsage(userId, "tool", "getWeather");
     if (!usage.allowed) {
       return res.status(429).json({ error: usage.message });
     }
@@ -1937,7 +1958,7 @@ async function startServer() {
   // REST API Route for real-time News
   app.get("/api/tools/news", requireAuth, async (req, res) => {
     const userId = (req as any).userId || "dev-user";
-    const usage = await checkAndIncrementUsage(userId, "tool");
+    const usage = await checkAndIncrementUsage(userId, "tool", "getLatestNews");
     if (!usage.allowed) {
       return res.status(429).json({ error: usage.message });
     }
@@ -1949,7 +1970,7 @@ async function startServer() {
   // REST API Route for Web Search scraper
   app.get("/api/tools/search", requireAuth, async (req, res) => {
     const userId = (req as any).userId || "dev-user";
-    const usage = await checkAndIncrementUsage(userId, "tool");
+    const usage = await checkAndIncrementUsage(userId, "tool", "searchWeb");
     if (!usage.allowed) {
       return res.status(429).json({ error: usage.message });
     }
@@ -2044,6 +2065,10 @@ async function startServer() {
     if (!isAdmin(userId) && !(await isPro(userId))) {
       return res.status(403).json({ error: "MEMORY_LOCKED" });
     }
+    const usage = await checkAndIncrementUsage(userId, "tool", "rememberFact");
+    if (!usage.allowed) {
+      return res.status(429).json({ error: usage.message });
+    }
     const { fact, category } = req.body;
     if (!fact) {
       return res.status(400).json({ error: "Missing required field 'fact'." });
@@ -2058,6 +2083,10 @@ async function startServer() {
     if (!isAdmin(userId) && !(await isPro(userId))) {
       return res.status(403).json({ error: "MEMORY_LOCKED" });
     }
+    const usage = await checkAndIncrementUsage(userId, "tool", "recallFacts");
+    if (!usage.allowed) {
+      return res.status(429).json({ error: usage.message });
+    }
     const memories = await recallFactsFromDb(String(userId));
     res.json({ memories });
   });
@@ -2065,7 +2094,7 @@ async function startServer() {
   // REST API Route to search YouTube for music track play request
   app.get("/api/music/search", requireAuth, async (req, res) => {
     const userId = (req as any).userId || "dev-user";
-    const usage = await checkAndIncrementUsage(userId, "tool");
+    const usage = await checkAndIncrementUsage(userId, "tool", "playMusic");
     if (!usage.allowed) {
       return res.status(429).json({ error: usage.message });
     }
@@ -2090,6 +2119,164 @@ async function startServer() {
     } catch (err: any) {
       res.status(500).json({ error: err.message || "Failed to search music" });
     }
+  });
+
+  // REST API Route to create Razorpay Subscription
+  app.post("/api/create-subscription", requireAuth, async (req, res) => {
+    const userId = (req as any).userId;
+    const { planId } = req.body;
+
+    if (!planId) {
+      return res.status(400).json({ error: "Missing required parameter 'planId'." });
+    }
+
+    const keyId = process.env.RAZORPAY_KEY_ID || "rzp_live_TLLam8g5sMqLCx";
+    const keySecret = process.env.RAZORPAY_KEY_SECRET;
+
+    if (!keySecret) {
+      console.warn("[Razorpay] RAZORPAY_KEY_SECRET is not set.");
+    }
+
+    try {
+      const authHeader = "Basic " + Buffer.from(`${keyId}:${keySecret || ""}`).toString("base64");
+
+      const response = await axios.post(
+        "https://api.razorpay.com/v1/subscriptions",
+        {
+          plan_id: planId,
+          total_count: 12,
+          quantity: 1,
+          customer_notify: 1,
+          notes: {
+            user_id: userId,
+          },
+        },
+        {
+          headers: {
+            Authorization: authHeader,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      return res.json({
+        subscription_id: response.data.id,
+        key_id: keyId,
+      });
+    } catch (err: any) {
+      console.error("[Razorpay] Error creating subscription:", err?.response?.data || err?.message || err);
+      Sentry.captureException(err, { tags: { feature: "razorpay" } });
+      const errorMessage = err?.response?.data?.error?.description || err?.message || "Failed to create subscription with Razorpay.";
+      return res.status(500).json({ error: errorMessage });
+    }
+  });
+
+  // REST API Route to verify and activate subscription after frontend payment
+  app.post("/api/verify-subscription", requireAuth, async (req, res) => {
+    const userId = (req as any).userId;
+    const { subscription_id, payment_id } = req.body;
+
+    if (!subscription_id) {
+      return res.status(400).json({ error: "Missing subscription_id." });
+    }
+
+    if (!supabase) {
+      return res.json({ success: true, isPro: true, message: "Subscription verified (in-memory mode)." });
+    }
+
+    try {
+      const endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+      const { error } = await supabase.from("subscriptions").upsert(
+        {
+          user_id: userId,
+          status: "active",
+          subscription_id: subscription_id,
+          payment_id: payment_id || null,
+          end_date: endDate,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" }
+      );
+
+      if (error) {
+        console.error("[Razorpay] Error updating subscription in Supabase:", error);
+        return res.status(500).json({ error: "Failed to update subscription in database." });
+      }
+
+      console.log(`[Razorpay] Successfully activated subscription for user ${userId}`);
+      return res.json({ success: true, isPro: true });
+    } catch (err: any) {
+      console.error("[Razorpay] Verify subscription error:", err);
+      return res.status(500).json({ error: err.message || "Failed to verify subscription." });
+    }
+  });
+
+  // REST API Route for Razorpay Webhook
+  app.post("/api/razorpay-webhook", async (req, res) => {
+    try {
+      const secret = process.env.RAZORPAY_WEBHOOK_SECRET || process.env.RAZORPAY_KEY_SECRET;
+      const signature = req.headers["x-razorpay-signature"] as string;
+
+      if (secret && signature) {
+        try {
+          const expectedSignature = crypto
+            .createHmac("sha256", secret)
+            .update(JSON.stringify(req.body))
+            .digest("hex");
+          if (expectedSignature !== signature) {
+            console.warn("[Razorpay Webhook] Signature verification mismatch.");
+          }
+        } catch (e) {
+          console.warn("[Razorpay Webhook] Failed to verify signature:", e);
+        }
+      }
+
+      const event = req.body?.event;
+      const payload = req.body?.payload;
+
+      console.log(`[Razorpay Webhook] Received event: ${event}`);
+
+      if (payload) {
+        const entity = payload.subscription?.entity || payload.payment?.entity;
+        const userId = entity?.notes?.user_id;
+
+        if (userId && supabase) {
+          let endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+          if (entity.current_end) {
+            endDate = new Date(entity.current_end * 1000).toISOString();
+          } else if (entity.end_at) {
+            endDate = new Date(entity.end_at * 1000).toISOString();
+          }
+
+          const status = (event === "subscription.halted" || event === "subscription.cancelled") ? "cancelled" : "active";
+
+          await supabase.from("subscriptions").upsert(
+            {
+              user_id: userId,
+              status: status,
+              subscription_id: entity.id || entity.subscription_id,
+              end_date: endDate,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "user_id" }
+          );
+
+          console.log(`[Razorpay Webhook] Updated user ${userId} subscription status to ${status}`);
+        }
+      }
+
+      return res.json({ status: "ok" });
+    } catch (err: any) {
+      console.error("[Razorpay Webhook] Error processing webhook:", err);
+      return res.status(500).json({ error: err.message || "Internal server error" });
+    }
+  });
+
+  // REST API Route to check subscription status
+  app.get("/api/subscription/status", requireAuth, async (req, res) => {
+    const userId = (req as any).userId;
+    const pro = await isPro(userId);
+    return res.json({ isPro: pro, userId });
   });
 
   // Setup WebSocket Server for Gemini Live API
