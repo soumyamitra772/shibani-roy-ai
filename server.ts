@@ -2388,6 +2388,7 @@ async function startServer() {
     let isAuthenticated = false;
     let userId = "anonymous-user";
     let voiceSessionStart = 0;
+    let voiceCheckInterval: any = null;
 
     const authTimeout = setTimeout(() => {
       if (!isAuthenticated) {
@@ -2454,6 +2455,34 @@ async function startServer() {
 
             // Track session start time so we can record duration on disconnect
             voiceSessionStart = Date.now();
+
+            if (voiceCheckInterval) clearInterval(voiceCheckInterval);
+            voiceCheckInterval = setInterval(async () => {
+              let recordedVoiceMinutes = 0;
+              if (supabase) {
+                try {
+                  const { data: voiceData } = await supabase
+                    .from("user_usage")
+                    .select("voice_minutes")
+                    .eq("user_id", userId)
+                    .eq("date", voiceToday)
+                    .maybeSingle();
+                  if (voiceData) recordedVoiceMinutes = Number(voiceData.voice_minutes) || 0;
+                } catch (e) { /* ignore */ }
+              }
+              const currentElapsed = Math.round((Date.now() - voiceSessionStart) / 60000);
+              const totalMinutesUsed = recordedVoiceMinutes + currentElapsed;
+              if (totalMinutesUsed > voiceLimit) {
+                if (voiceCheckInterval) clearInterval(voiceCheckInterval);
+                clientWs.send(JSON.stringify({ type: "error", message: "VOICE_LIMIT_REACHED" }));
+                if (session) {
+                  try {
+                    session.close();
+                  } catch (e) { /* ignore */ }
+                }
+                clientWs.close();
+              }
+            }, 60000);
 
             try {
               const wsMemories = userIsProOrAdmin ? await recallFactsFromDb(userId) : [];
@@ -2566,6 +2595,10 @@ async function startServer() {
     });
 
     clientWs.on("close", async () => {
+      if (voiceCheckInterval) {
+        clearInterval(voiceCheckInterval);
+        voiceCheckInterval = null;
+      }
       clearTimeout(authTimeout);
       console.log("Client WS closed, cleaning up Gemini Live session");
       if (session) {
