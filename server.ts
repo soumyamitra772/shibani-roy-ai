@@ -953,7 +953,8 @@ async function startServer() {
     .filter(Boolean);
 
   function isAdmin(userId: string): boolean {
-    return ADMIN_USER_IDS.includes(userId);
+    const telegramAdminId = process.env.TELEGRAM_ADMIN_CHAT_ID;
+    return ADMIN_USER_IDS.includes(userId) || (!!telegramAdminId && userId === telegramAdminId);
   }
 
   // Check if user has an active Pro subscription in Supabase
@@ -1592,6 +1593,96 @@ async function startServer() {
 
   app.use("/api/", apiLimiter);
 
+  // Admin middleware — checks TELEGRAM_ADMIN_CHAT_ID or ADMIN_USER_IDS
+  function requireAdmin(req: any, res: any, next: any) {
+    const userId = req.userId;
+    const telegramAdminId = process.env.TELEGRAM_ADMIN_CHAT_ID;
+    const adminUserIds = (process.env.ADMIN_USER_IDS || "")
+      .split(",").map((id: string) => id.trim()).filter(Boolean);
+    const allowed = adminUserIds.includes(userId) || userId === telegramAdminId;
+    if (!allowed) return res.status(403).json({ error: "Forbidden: Admin access only." });
+    next();
+  }
+
+  // GET /api/admin/stats — overall summary
+  app.get("/api/admin/stats", requireAuth, requireAdmin, async (req, res) => {
+    if (!supabase) return res.status(503).json({ error: "Supabase not connected." });
+    try {
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+      const [{ count: totalUsers }, { count: proUsers }, { data: todayUsage }] = await Promise.all([
+        supabase.from("user_usage").select("*", { count: "exact", head: true }),
+        supabase.from("subscriptions").select("*", { count: "exact", head: true }).in("status", ["active", "trialing"]),
+        supabase.from("user_usage").select("user_id, chat_messages, images_generated, tool_calls, voice_minutes").eq("date", today),
+      ]);
+      const activeToday = todayUsage?.length || 0;
+      const totalMessages = todayUsage?.reduce((s: number, u: any) => s + (u.chat_messages || 0), 0) || 0;
+      res.json({ totalUsers, proUsers, activeToday, totalMessages, today });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // GET /api/admin/users — paginated user usage list
+  app.get("/api/admin/users", requireAuth, requireAdmin, async (req, res) => {
+    if (!supabase) return res.status(503).json({ error: "Supabase not connected." });
+    try {
+      const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+      const { data: usage } = await supabase
+        .from("user_usage").select("*").eq("date", today).order("chat_messages", { ascending: false }).limit(100);
+      const { data: subs } = await supabase
+        .from("subscriptions").select("user_id, status, end_date").in("status", ["active", "trialing"]);
+      const proMap: Record<string, any> = {};
+      (subs || []).forEach((s: any) => { proMap[s.user_id] = s; });
+      const users = (usage || []).map((u: any) => ({
+        userId: u.user_id,
+        chatMessages: u.chat_messages || 0,
+        imagesGenerated: u.images_generated || 0,
+        toolCalls: u.tool_calls || 0,
+        voiceMinutes: u.voice_minutes || 0,
+        isPro: !!proMap[u.user_id],
+        subStatus: proMap[u.user_id]?.status || "free",
+        subExpiry: proMap[u.user_id]?.end_date || null,
+      }));
+      res.json({ users, date: today });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/admin/grant-pro — manually grant pro to a user
+  app.post("/api/admin/grant-pro", requireAuth, requireAdmin, async (req, res) => {
+    if (!supabase) return res.status(503).json({ error: "Supabase not connected." });
+    const { userId: targetUserId } = req.body;
+    if (!targetUserId) return res.status(400).json({ error: "userId is required." });
+    try {
+      const endDate = new Date();
+      endDate.setFullYear(endDate.getFullYear() + 1);
+      await supabase.from("subscriptions").upsert({
+        user_id: targetUserId, status: "active",
+        end_date: endDate.toISOString(), updated_at: new Date().toISOString(),
+      }, { onConflict: "user_id" });
+      res.json({ success: true, message: `Pro granted to ${targetUserId}` });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/admin/revoke-pro — revoke pro from a user
+  app.post("/api/admin/revoke-pro", requireAuth, requireAdmin, async (req, res) => {
+    if (!supabase) return res.status(503).json({ error: "Supabase not connected." });
+    const { userId: targetUserId } = req.body;
+    if (!targetUserId) return res.status(400).json({ error: "userId is required." });
+    try {
+      await supabase.from("subscriptions").upsert({
+        user_id: targetUserId, status: "cancelled",
+        end_date: new Date().toISOString(), updated_at: new Date().toISOString(),
+      }, { onConflict: "user_id" });
+      res.json({ success: true, message: `Pro revoked from ${targetUserId}` });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // REST API Route for standard Chat Mode with streaming support
   app.post("/api/chat", requireAuth, async (req, res) => {
     const { messages } = req.body;
@@ -2130,14 +2221,15 @@ async function startServer() {
       return res.status(400).json({ error: "Missing required parameter 'planId'." });
     }
 
-    const keyId = process.env.RAZORPAY_KEY_ID || "rzp_live_TLLam8g5sMqLCx";
-    const keySecret = process.env.RAZORPAY_KEY_SECRET;
-
-    if (!keySecret) {
-      console.warn("[Razorpay] RAZORPAY_KEY_SECRET is not set.");
-    }
-
     try {
+      const keyId = process.env.RAZORPAY_KEY_ID;
+      if (!keyId) throw new Error("[Razorpay] RAZORPAY_KEY_ID environment variable is not set.");
+
+      const keySecret = process.env.RAZORPAY_KEY_SECRET;
+
+      if (!keySecret) {
+        console.warn("[Razorpay] RAZORPAY_KEY_SECRET is not set.");
+      }
       const authHeader = "Basic " + Buffer.from(`${keyId}:${keySecret || ""}`).toString("base64");
 
       const response = await axios.post(
@@ -2282,7 +2374,11 @@ async function startServer() {
   app.get("/api/user-status", requireAuth, async (req, res) => {
     const userId = (req as any).userId;
     const pro = await isPro(userId);
-    return res.json({ isPro: pro, userId });
+    const telegramAdminId = process.env.TELEGRAM_ADMIN_CHAT_ID;
+    const adminUserIds = (process.env.ADMIN_USER_IDS || "")
+      .split(",").map((id: string) => id.trim()).filter(Boolean);
+    const admin = adminUserIds.includes(userId) || userId === telegramAdminId;
+    return res.json({ isPro: pro, isAdmin: admin, userId });
   });
 
   // Setup WebSocket Server for Gemini Live API

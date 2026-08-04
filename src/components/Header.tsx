@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Mic, MessageSquare, Radio, Github, Palette, LogOut, Camera, Sparkles } from "lucide-react";
+import { Mic, MessageSquare, Radio, Github, Palette, LogOut, Camera, Sparkles, ShieldCheck } from "lucide-react";
 import { InteractionMode, AssistantState } from "../types";
 import { ThemeId, THEMES } from "../utils/themes";
 
@@ -16,6 +16,8 @@ interface HeaderProps {
   onAvatarPreferenceChange: (pref: string) => void;
   isPro?: boolean;
   onUpgradeClick?: () => void;
+  isAdmin?: boolean;
+  onAdminClick?: () => void;
 }
 
 export default function Header({ 
@@ -30,6 +32,8 @@ export default function Header({
   onAvatarPreferenceChange,
   isPro = false,
   onUpgradeClick,
+  isAdmin = false,
+  onAdminClick,
 }: HeaderProps) {
   const [showLooks, setShowLooks] = useState(false);
 
@@ -140,6 +144,17 @@ export default function Header({
             <span className="text-gray-400">Voice Link:</span>
             <span className="font-medium text-white">{status?.label || "Offline"}</span>
           </div>
+
+          {/* Admin Button */}
+          {session && isAdmin && (
+            <button
+              onClick={onAdminClick}
+              className="p-2 rounded-full hover:bg-white/10 transition cursor-pointer"
+              title="Admin Panel"
+            >
+              <ShieldCheck className="w-4 h-4 text-purple-400" />
+            </button>
+          )}
 
           {/* Logout Button */}
           {session && (

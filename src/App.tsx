@@ -16,6 +16,7 @@ import { MusicPlayer } from "./components/MusicPlayer";
 import { setAuthenticatedUser } from "./utils/userId";
 import { ThemeId, THEMES } from "./utils/themes";
 import LoginScreen from "./components/LoginScreen";
+import AdminPanel from "./components/AdminPanel";
 import { supabase } from "./utils/supabaseClient";
 import { getActiveAvatar, getAvatarPreference, saveAvatarPreference } from "./utils/avatarUtils";
 
@@ -71,7 +72,7 @@ function UpgradeModal({ session, onClose, onSuccess, onError }: UpgradeModalProp
       }
 
       const options = {
-        key: data.key_id || "rzp_live_TLLam8g5sMqLCx",
+        key: data.key_id,
         subscription_id: data.subscription_id,
         name: "Shibani Roy AI",
         description: selectedPlan === "monthly" ? "Pro Monthly Subscription" : "Pro Yearly Subscription",
@@ -251,6 +252,8 @@ export default function App() {
   const [session, setSession] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [isPro, setIsPro] = useState<boolean>(false);
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [showAdmin, setShowAdmin] = useState(false);
 
   const fetchUserStatus = async () => {
     try {
@@ -263,6 +266,7 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setIsPro(!!data.isPro);
+        setIsAdmin(!!data.isAdmin);
       }
     } catch (e) {
       console.warn("Failed to fetch user status:", e);
@@ -274,6 +278,7 @@ export default function App() {
       fetchUserStatus();
     } else {
       setIsPro(false);
+      setIsAdmin(false);
     }
   }, [session]);
 
@@ -906,6 +911,8 @@ export default function App() {
           onAvatarPreferenceChange={handleAvatarPreferenceChange}
           isPro={isPro}
           onUpgradeClick={() => setShowUpgradeModal(true)}
+          isAdmin={isAdmin}
+          onAdminClick={() => setShowAdmin(true)}
         />
 
         {!session ? (
@@ -1049,6 +1056,10 @@ export default function App() {
           </>
         )}
       </main>
+
+      {showAdmin && isAdmin && (
+        <AdminPanel theme={theme} session={session} onClose={() => setShowAdmin(false)} />
+      )}
 
       {/* Floating Smart Media Player */}
       <MusicPlayer />
