@@ -1124,7 +1124,6 @@ async function startServer() {
               date: today,
               images_generated: newImages,
               tool_calls: newTools,
-              voice_minutes: currentVoice,
               chat_messages: newChat,
               updated_at: new Date().toISOString(),
             },
@@ -2445,8 +2444,8 @@ async function startServer() {
               } catch (e) { /* ignore */ }
             }
 
-            const voiceIsProOrAdmin = isAdmin(userId) || await isPro(userId);
-            const voiceLimit = voiceIsProOrAdmin ? VOICE_LIMIT_PRO : VOICE_LIMIT_FREE;
+            const userIsProOrAdmin = isAdmin(userId) || await isPro(userId);
+            const voiceLimit = userIsProOrAdmin ? VOICE_LIMIT_PRO : VOICE_LIMIT_FREE;
 
             if (currentVoiceMinutes >= voiceLimit) {
               clientWs.send(JSON.stringify({ type: "error", message: "VOICE_LIMIT_REACHED" }));
@@ -2458,8 +2457,7 @@ async function startServer() {
             voiceSessionStart = Date.now();
 
             try {
-              const wsUserIsProOrAdmin = isAdmin(userId) || await isPro(userId);
-              const wsMemories = wsUserIsProOrAdmin ? await recallFactsFromDb(userId) : [];
+              const wsMemories = userIsProOrAdmin ? await recallFactsFromDb(userId) : [];
               const systemInstruction = getSystemInstruction(wsMemories);
 
               const WS_PRO_ONLY_TOOLS = new Set([
@@ -2468,7 +2466,7 @@ async function startServer() {
                 "setVolume", "setPlaybackState", "recommendSongByMood",
                 "generateImage", "rememberFact", "recallFacts",
               ]);
-              const wsAvailableDeclarations = wsUserIsProOrAdmin
+              const wsAvailableDeclarations = userIsProOrAdmin
                 ? FUNCTION_DECLARATIONS
                 : FUNCTION_DECLARATIONS.filter((d: any) => !WS_PRO_ONLY_TOOLS.has(d.name));
 
@@ -2581,7 +2579,7 @@ async function startServer() {
 
       // Record voice minutes used in this session
       if (voiceSessionStart > 0) {
-        const voiceMinutesUsed = Math.ceil((Date.now() - voiceSessionStart) / 60000);
+        const voiceMinutesUsed = Math.round((Date.now() - voiceSessionStart) / 60000);
         if (voiceMinutesUsed > 0 && supabase) {
           try {
             const voiceDate = getKolkataDateString();

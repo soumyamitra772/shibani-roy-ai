@@ -489,8 +489,9 @@ export default function App() {
   } = useVoiceConnection({
     selectedMicId,
     onVoiceError: (errorMsg) => {
-      if (
-        errorMsg === "VOICE_LIMIT_REACHED" ||
+      if (errorMsg === "VOICE_LIMIT_REACHED") {
+        triggerNotification("You've used your voice minutes for today 🌸 Resets at midnight IST", "info");
+      } else if (
         errorMsg === "TOOL_LOCKED" ||
         errorMsg === "IMAGE_LOCKED" ||
         errorMsg === "CHAT_LIMIT_REACHED"
