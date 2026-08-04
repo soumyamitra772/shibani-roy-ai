@@ -964,7 +964,7 @@ async function startServer() {
     try {
       const { data, error } = await supabase
         .from("subscriptions")
-        .select("status, end_date")
+        .select("status")
         .eq("user_id", userId)
         .in("status", ["active", "trialing"])
         .maybeSingle();
@@ -973,7 +973,6 @@ async function startServer() {
         return false;
       }
       if (!data) return false;
-      if (data.end_date && new Date(data.end_date) < new Date()) return false;
       return true;
     } catch (err) {
       console.warn("[isPro] Error checking subscription:", err);
