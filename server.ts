@@ -1769,11 +1769,9 @@ async function startServer() {
       const memories = userIsProOrAdmin && userId ? await recallFactsFromDb(String(userId)) : [];
       const systemInstruction = getSystemInstruction(memories);
 
-      // Free users get a stripped-down tool set (no search, music, images, memory)
+      // Free users get a stripped-down tool set (no search, images, memory)
       const PRO_ONLY_TOOLS = new Set([
         "searchWeb", "getLatestNews", "getWeather",
-        "playMusic", "pauseMusic", "resumeMusic", "nextTrack", "previousTrack",
-        "setVolume", "setPlaybackState", "recommendSongByMood",
         "generateImage", "rememberFact", "recallFacts",
       ]);
       const availableDeclarations = userIsProOrAdmin
@@ -2196,10 +2194,6 @@ async function startServer() {
   // REST API Route to search YouTube for music track play request
   app.get("/api/music/search", requireAuth, async (req, res) => {
     const userId = (req as any).userId || "dev-user";
-    const usage = await checkAndIncrementUsage(userId, "tool", "playMusic");
-    if (!usage.allowed) {
-      return res.status(429).json({ error: usage.message });
-    }
     const { q } = req.query;
     if (!q) {
       return res.status(400).json({ error: "Missing required query parameter 'q'." });
@@ -2503,8 +2497,6 @@ async function startServer() {
 
               const WS_PRO_ONLY_TOOLS = new Set([
                 "searchWeb", "getLatestNews", "getWeather",
-                "playMusic", "pauseMusic", "resumeMusic", "nextTrack", "previousTrack",
-                "setVolume", "setPlaybackState", "recommendSongByMood",
                 "generateImage", "rememberFact", "recallFacts",
               ]);
               const wsAvailableDeclarations = userIsProOrAdmin
