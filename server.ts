@@ -964,7 +964,7 @@ async function startServer() {
     try {
       const { data, error } = await supabase
         .from("subscriptions")
-        .select("status")
+        .select("status, current_period_end")
         .eq("user_id", userId)
         .in("status", ["active", "trialing"])
         .maybeSingle();
@@ -973,6 +973,7 @@ async function startServer() {
         return false;
       }
       if (!data) return false;
+      if (data.current_period_end && new Date(data.current_period_end) < new Date()) return false;
       return true;
     } catch (err) {
       console.warn("[isPro] Error checking subscription:", err);
@@ -1653,12 +1654,17 @@ async function startServer() {
     const { userId: targetUserId } = req.body;
     if (!targetUserId) return res.status(400).json({ error: "userId is required." });
     try {
-      const endDate = new Date();
-      endDate.setFullYear(endDate.getFullYear() + 1);
-      await supabase.from("subscriptions").upsert({
-        user_id: targetUserId, status: "active",
-        end_date: endDate.toISOString(), updated_at: new Date().toISOString(),
+      const { error } = await supabase.from("subscriptions").upsert({
+        user_id: targetUserId,
+        plan: "pro",
+        status: "active",
+        current_period_end: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
+        updated_at: new Date().toISOString(),
       }, { onConflict: "user_id" });
+      if (error) {
+        console.error("[grant-pro] Supabase error:", error.message);
+        return res.status(500).json({ error: error.message });
+      }
       res.json({ success: true, message: `Pro granted to ${targetUserId}` });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -1671,10 +1677,17 @@ async function startServer() {
     const { userId: targetUserId } = req.body;
     if (!targetUserId) return res.status(400).json({ error: "userId is required." });
     try {
-      await supabase.from("subscriptions").upsert({
-        user_id: targetUserId, status: "cancelled",
-        end_date: new Date().toISOString(), updated_at: new Date().toISOString(),
+      const { error } = await supabase.from("subscriptions").upsert({
+        user_id: targetUserId,
+        plan: "free",
+        status: "cancelled",
+        current_period_end: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       }, { onConflict: "user_id" });
+      if (error) {
+        console.error("[revoke-pro] Supabase error:", error.message);
+        return res.status(500).json({ error: error.message });
+      }
       res.json({ success: true, message: `Pro revoked from ${targetUserId}` });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
