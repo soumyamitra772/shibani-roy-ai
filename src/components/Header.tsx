@@ -72,9 +72,13 @@ export default function Header({
               Shibani Roy
             </h1>
             {isPro ? (
-              <span className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-gradient-to-r from-amber-500/20 to-yellow-500/20 border border-amber-500/40 text-amber-300 font-mono text-[9px] font-bold uppercase tracking-wider shadow-[0_0_10px_rgba(245,158,11,0.2)]">
+              <button
+                onClick={onUpgradeClick}
+                className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-gradient-to-r from-amber-500/20 to-yellow-500/20 border border-amber-500/40 text-amber-300 font-mono text-[9px] font-bold uppercase tracking-wider shadow-[0_0_10px_rgba(245,158,11,0.2)] hover:bg-amber-500/30 hover:scale-105 transition-all cursor-pointer"
+                title="View Pro Subscription Details"
+              >
                 ⭐ Pro
-              </span>
+              </button>
             ) : (
               <span className={`flex items-center gap-1 px-2 py-0.5 rounded border ${activeTheme.badgeClass} font-mono text-[9px] uppercase tracking-widest`}>
                 AI Companion
@@ -114,6 +118,18 @@ export default function Header({
             >
               <Sparkles className="w-3.5 h-3.5 fill-black text-black" />
               <span>Upgrade to Pro ⭐</span>
+            </button>
+          )}
+
+          {/* Manage Subscription Button for logged-in Pro users */}
+          {session && isPro && onUpgradeClick && (
+            <button
+              onClick={onUpgradeClick}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 font-bold text-xs shadow-md shadow-amber-500/10 hover:scale-[1.03] active:scale-95 transition-all duration-300 cursor-pointer font-sans shrink-0"
+              title="View Pro Subscription & Settings"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+              <span>Pro Plan ⭐</span>
             </button>
           )}
 

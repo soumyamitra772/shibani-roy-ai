@@ -22,14 +22,86 @@ import { getActiveAvatar, getAvatarPreference, saveAvatarPreference } from "./ut
 
 interface UpgradeModalProps {
   session: any;
+  isPro?: boolean;
   onClose: () => void;
   onSuccess: () => void;
   onError: (msg: string) => void;
 }
 
-function UpgradeModal({ session, onClose, onSuccess, onError }: UpgradeModalProps) {
+function UpgradeModal({ session, isPro, onClose, onSuccess, onError }: UpgradeModalProps) {
   const [selectedPlan, setSelectedPlan] = useState<"monthly" | "yearly">("yearly");
   const [loading, setLoading] = useState(false);
+
+  if (isPro) {
+    return (
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        onClick={onClose}
+        className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4"
+      >
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95, y: 20 }}
+          animate={{ opacity: 1, scale: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.95, y: 20 }}
+          onClick={(e) => e.stopPropagation()}
+          className="relative w-full max-w-md rounded-3xl border border-amber-500/30 bg-neutral-900/90 backdrop-blur-xl p-6 sm:p-8 shadow-2xl text-white overflow-hidden flex flex-col gap-6"
+        >
+          {/* Ambient glow accent */}
+          <div className="absolute -top-24 -right-24 w-48 h-48 rounded-full bg-amber-500/20 blur-3xl pointer-events-none" />
+          <div className="absolute -bottom-24 -left-24 w-48 h-48 rounded-full bg-rose-500/20 blur-3xl pointer-events-none" />
+
+          {/* Header */}
+          <div className="flex items-start justify-between">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <Sparkles className="w-5 h-5 text-amber-400" />
+                <h3 className="text-xl font-bold bg-gradient-to-r from-amber-300 via-yellow-200 to-amber-400 bg-clip-text text-transparent">
+                  Pro Subscription Active ⭐
+                </h3>
+              </div>
+              <p className="text-xs text-gray-400 leading-relaxed">
+                Logged in as <span className="text-gray-200 font-medium">{session?.user?.email || "User"}</span>
+              </p>
+            </div>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-full hover:bg-white/10 text-gray-400 hover:text-white transition-colors cursor-pointer shrink-0"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Subscription details card */}
+          <div className="p-4 rounded-2xl border border-amber-500/20 bg-amber-500/5 flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-gray-300 font-medium">Plan Status</span>
+              <span className="px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-mono text-[10px] font-bold uppercase">
+                Active Pro
+              </span>
+            </div>
+            <p className="text-xs text-gray-400 mt-1 leading-relaxed">
+              You have active Pro access to Shibani Roy AI. Enjoy unlimited music tools, high-capacity voice & chat, memory recall, and image generation.
+            </p>
+          </div>
+
+          {/* Cancel Subscription section */}
+          <div className="flex flex-col items-center gap-2 pt-2 border-t border-white/10">
+            <button
+              onClick={() => window.open("https://www.shibaniroy.com/refund", "_blank")}
+              className="w-full py-2.5 px-4 rounded-xl border border-red-500/60 bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 font-semibold text-xs tracking-wide transition-all duration-300 cursor-pointer flex items-center justify-center gap-2 shadow-sm"
+            >
+              Cancel Subscription
+            </button>
+            <span className="text-[11px] text-gray-400 font-sans text-center">
+              Review our cancellation policy before proceeding
+            </span>
+          </div>
+        </motion.div>
+      </motion.div>
+    );
+  }
 
   const loadRazorpayScript = (): Promise<boolean> => {
     return new Promise((resolve) => {
@@ -1070,6 +1142,7 @@ export default function App() {
         {showUpgradeModal && (
           <UpgradeModal
             session={session}
+            isPro={isPro}
             onClose={() => setShowUpgradeModal(false)}
             onSuccess={() => {
               triggerNotification("Successfully upgraded to Pro! 🎉", "success");
