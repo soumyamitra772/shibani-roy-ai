@@ -889,6 +889,9 @@ async function startServer() {
     })
   );
 
+  // Raw body parser for Razorpay webhook
+  app.use("/api/razorpay-webhook", express.raw({ type: "application/json" }));
+
   // Payload body limit
   app.use(express.json({ limit: "1mb" }));
   app.use(express.urlencoded({ limit: "1mb", extended: true }));
@@ -2314,11 +2317,13 @@ async function startServer() {
       const secret = process.env.RAZORPAY_WEBHOOK_SECRET || process.env.RAZORPAY_KEY_SECRET;
       const signature = req.headers["x-razorpay-signature"] as string;
 
+      const rawBody = req.body instanceof Buffer ? req.body.toString() : JSON.stringify(req.body);
+
       if (secret && signature) {
         try {
           const expectedSignature = crypto
             .createHmac("sha256", secret)
-            .update(JSON.stringify(req.body))
+            .update(rawBody)
             .digest("hex");
           if (expectedSignature !== signature) {
             console.warn("[Razorpay Webhook] Signature verification mismatch.");
@@ -2328,8 +2333,25 @@ async function startServer() {
         }
       }
 
-      const event = req.body?.event;
-      const payload = req.body?.payload;
+      let parsedBody: any = {};
+      if (req.body instanceof Buffer) {
+        try {
+          parsedBody = JSON.parse(rawBody);
+        } catch (e) {
+          console.warn("[Razorpay Webhook] Failed to parse raw body JSON:", e);
+        }
+      } else if (typeof req.body === "string") {
+        try {
+          parsedBody = JSON.parse(req.body);
+        } catch (e) {
+          parsedBody = {};
+        }
+      } else {
+        parsedBody = req.body || {};
+      }
+
+      const event = parsedBody?.event;
+      const payload = parsedBody?.payload;
 
       console.log(`[Razorpay Webhook] Received event: ${event}`);
 
@@ -2338,7 +2360,7 @@ async function startServer() {
         const userId = entity?.notes?.user_id;
 
         if (userId && supabase) {
-          let endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+          let endDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
           if (entity.current_end) {
             endDate = new Date(entity.current_end * 1000).toISOString();
           } else if (entity.end_at) {
