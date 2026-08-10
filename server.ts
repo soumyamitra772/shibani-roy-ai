@@ -1166,6 +1166,10 @@ async function startServer() {
 
   // Meta (Facebook Messenger & Instagram) Incoming Webhook Handler
   app.post("/webhook/meta", async (req, res) => {
+    if (process.env.META_AUTO_DM_ENABLED !== 'true') {
+      return res.status(200).send("EVENT_RECEIVED");
+    }
+
     console.log("[Meta Webhook] RAW HIT:", JSON.stringify(req.body, null, 2));
     console.log("[Meta Webhook] Object type:", req.body?.object);
 
