@@ -112,10 +112,10 @@ async function checkPerMinuteRateLimit(
 }
 
 /**
- * Check daily rate limit (max 50 messages per day per user) using telegram_usage table
+ * Check daily rate limit (max 20 messages per day per user) using telegram_usage table
  */
 async function checkDailyRateLimit(supabase: SupabaseClient | null, telegramUserId: string, today: string): Promise<boolean> {
-  const maxPerDay = 50;
+  const maxPerDay = 20;
 
   // 1. Check in-memory fallback count first
   const mem = inMemoryDailyUsage.get(telegramUserId);
@@ -611,14 +611,14 @@ export async function handleTelegramWebhook(
     return;
   }
 
-  // Enforce daily rate limit (50 messages per day per telegram_user_id)
+  // Enforce daily rate limit (20 messages per day per telegram_user_id)
   const today = new Date().toISOString().split("T")[0];
   const isDailyAllowed = await checkDailyRateLimit(supabase, telegramUserId, today);
   if (!isDailyAllowed) {
     await sendTelegramMessage(
       botToken,
       chatId,
-      "💕 You've reached today's free limit of 50 messages. Please come back tomorrow to continue chatting with me."
+      "💕 You've reached today's free message limit of 20 messages. Please come back tomorrow to continue chatting, or explore my Companion App for more conversations, features, and ways to connect with me:\nhttps://www.shibaniroy.com/companion"
     );
     return;
   }
