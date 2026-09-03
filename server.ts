@@ -2289,14 +2289,55 @@ async function startServer() {
     }
 
     try {
-      const endDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+      let plan_type = req.body?.plan_type === "yearly" ? "yearly" : "monthly";
+      let currentPeriodEnd: string | null = null;
+
+      // Call Razorpay REST API to fetch real end timestamp and plan_id
+      try {
+        const keyId = process.env.RAZORPAY_KEY_ID;
+        const keySecret = process.env.RAZORPAY_KEY_SECRET;
+
+        if (keyId) {
+          const authHeader = "Basic " + Buffer.from(`${keyId}:${keySecret || ""}`).toString("base64");
+          const rzpResponse = await axios.get(
+            `https://api.razorpay.com/v1/subscriptions/${subscription_id}`,
+            {
+              headers: {
+                Authorization: authHeader,
+              },
+              timeout: 10000,
+            }
+          );
+          const rzpSub = rzpResponse.data;
+          if (rzpSub) {
+            // Detect plan type by comparing rzpSub.plan_id against known yearly plan ID plan_TLKnHmEPZWLSqg
+            plan_type = rzpSub.plan_id === "plan_TLKnHmEPZWLSqg" ? "yearly" : "monthly";
+
+            if (rzpSub.current_end) {
+              currentPeriodEnd = new Date(rzpSub.current_end * 1000).toISOString();
+            } else if (rzpSub.end_at) {
+              currentPeriodEnd = new Date(rzpSub.end_at * 1000).toISOString();
+            }
+          }
+        }
+      } catch (rzpErr: any) {
+        console.warn("[Razorpay] Failed to fetch subscription details from Razorpay API, falling back to calculation:", rzpErr?.response?.data || rzpErr?.message || rzpErr);
+      }
+
+      // If Razorpay fetch fails or did not provide an end date, fall back to calculation
+      if (!currentPeriodEnd) {
+        const daysToAdd = plan_type === "yearly" ? 365 : 30;
+        currentPeriodEnd = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000).toISOString();
+      }
+
       const { error } = await supabase.from("subscriptions").upsert(
         {
           user_id: userId,
           status: "active",
           subscription_id: subscription_id,
           payment_id: payment_id || null,
-          end_date: endDate,
+          plan_type: plan_type,
+          current_period_end: currentPeriodEnd,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "user_id" }
@@ -2307,7 +2348,7 @@ async function startServer() {
         return res.status(500).json({ error: "Failed to update subscription in database." });
       }
 
-      console.log(`[Razorpay] Successfully activated subscription for user ${userId}`);
+      console.log(`[Razorpay] Successfully activated subscription for user ${userId} (plan: ${plan_type}, current_period_end: ${currentPeriodEnd})`);
       return res.json({ success: true, isPro: true });
     } catch (err: any) {
       console.error("[Razorpay] Verify subscription error:", err);
@@ -2330,7 +2371,8 @@ async function startServer() {
             .update(rawBody)
             .digest("hex");
           if (expectedSignature !== signature) {
-            console.warn("[Razorpay Webhook] Signature verification mismatch.");
+            console.warn("[Razorpay Webhook] Signature verification mismatch — rejecting.");
+            return res.status(400).json({ error: "Invalid webhook signature." });
           }
         } catch (e) {
           console.warn("[Razorpay Webhook] Failed to verify signature:", e);
@@ -2364,11 +2406,13 @@ async function startServer() {
         const userId = entity?.notes?.user_id;
 
         if (userId && supabase) {
-          let endDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+          const plan_type = entity?.plan_id === "plan_TLKnHmEPZWLSqg" ? "yearly" : "monthly";
+          const daysToAdd = plan_type === "yearly" ? 365 : 30;
+          let currentPeriodEnd = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000).toISOString();
           if (entity.current_end) {
-            endDate = new Date(entity.current_end * 1000).toISOString();
+            currentPeriodEnd = new Date(entity.current_end * 1000).toISOString();
           } else if (entity.end_at) {
-            endDate = new Date(entity.end_at * 1000).toISOString();
+            currentPeriodEnd = new Date(entity.end_at * 1000).toISOString();
           }
 
           const status = (event === "subscription.halted" || event === "subscription.cancelled") ? "cancelled" : "active";
@@ -2378,7 +2422,8 @@ async function startServer() {
               user_id: userId,
               status: status,
               subscription_id: entity.id || entity.subscription_id,
-              end_date: endDate,
+              plan_type: plan_type,
+              current_period_end: currentPeriodEnd,
               updated_at: new Date().toISOString(),
             },
             { onConflict: "user_id" }
