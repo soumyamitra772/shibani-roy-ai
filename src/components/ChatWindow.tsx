@@ -51,6 +51,9 @@ export default function ChatWindow({
   const [starters, setStarters] = useState<string[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  const visibleMessages = messages.filter((m) => !m.isHidden);
+  const hasUserMessage = visibleMessages.some((m) => m.role === "user");
+
   // Safe and native image downloader
   const handleDownloadImage = async (imageUrl: string, description: string) => {
     try {
@@ -82,10 +85,16 @@ export default function ChatWindow({
     setStarters(shuffled.slice(0, 5));
   };
 
-  // Rotate starters when component mounts or messages change to empty
+  // Rotate starters only on mount and when hasUserMessage flips from true to false (New Chat / Clear), not on every message change
+  const prevHasUserMessageRef = useRef<boolean | null>(null);
   useEffect(() => {
-    rotateStarters();
-  }, [messages.length]);
+    if (prevHasUserMessageRef.current === null) {
+      rotateStarters();
+    } else if (prevHasUserMessageRef.current && !hasUserMessage) {
+      rotateStarters();
+    }
+    prevHasUserMessageRef.current = hasUserMessage;
+  }, [hasUserMessage]);
 
   // Auto scroll to bottom
   useEffect(() => {
@@ -147,26 +156,22 @@ export default function ChatWindow({
 
       {/* Message List area */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4 min-h-0 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
-        {(() => {
-          const visibleMessages = messages.filter(msg => !msg.isHidden);
-          if (visibleMessages.length === 0) {
-            return (
-              <div className="flex flex-col items-center justify-center h-full text-center p-6 space-y-4">
-                <div className="w-20 h-20 rounded-full border border-rose-500/20 flex items-center justify-center p-0.5 bg-gradient-to-tr from-rose-500 to-pink-500 shadow-lg overflow-hidden">
-                  <div className="w-full h-full rounded-full overflow-hidden bg-[#12101a]">
-                    <img src={avatarUrl} alt="Shibani" className="w-full h-full object-cover" />
-                  </div>
-                </div>
-                <div>
-                  <h3 className="text-lg font-medium text-white">Ask Shibani anything</h3>
-                  <p className="text-sm text-gray-400 mt-1 max-w-sm">
-                    Say hello, tease her, test her multilingual skills, or ask her to search the web!
-                  </p>
-                </div>
+        {visibleMessages.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-center p-6 space-y-4">
+            <div className="w-20 h-20 rounded-full border border-rose-500/20 flex items-center justify-center p-0.5 bg-gradient-to-tr from-rose-500 to-pink-500 shadow-lg overflow-hidden">
+              <div className="w-full h-full rounded-full overflow-hidden bg-[#12101a]">
+                <img src={avatarUrl} alt="Shibani" className="w-full h-full object-cover" />
               </div>
-            );
-          }
-          return visibleMessages.map((msg) => {
+            </div>
+            <div>
+              <h3 className="text-lg font-medium text-white">Ask Shibani anything</h3>
+              <p className="text-sm text-gray-400 mt-1 max-w-sm">
+                Say hello, tease her, test her multilingual skills, or ask her to search the web!
+              </p>
+            </div>
+          </div>
+        ) : (
+          visibleMessages.map((msg) => {
             const isAssistant = msg.role === "assistant";
             return (
               <div
@@ -248,8 +253,8 @@ export default function ChatWindow({
                 </div>
               </div>
             );
-          });
-        })()}
+          })
+        )}
 
         {/* Dynamic Image Generation Loading State */}
         {isGeneratingImage && (
@@ -278,7 +283,7 @@ export default function ChatWindow({
       </div>
 
       {/* Quick reply tags */}
-      {messages.length === 0 && (
+      {!hasUserMessage && !isLoading && (
         <div className="px-6 py-3 select-none border-t border-white/5 bg-black/20">
           <p className="text-center text-[10px] uppercase tracking-widest text-gray-500 mb-2 font-mono">Suggested Conversations</p>
           <div className="flex flex-wrap gap-2 justify-center">

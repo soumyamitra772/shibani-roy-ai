@@ -160,6 +160,7 @@ function UpgradeModal({ session, isPro, onClose, onSuccess, onError }: UpgradeMo
               body: JSON.stringify({
                 subscription_id: paymentResponse.razorpay_subscription_id,
                 payment_id: paymentResponse.razorpay_payment_id,
+                razorpay_signature: paymentResponse.razorpay_signature,
               }),
             });
             const verifyData = await verifyRes.json();
@@ -167,12 +168,11 @@ function UpgradeModal({ session, isPro, onClose, onSuccess, onError }: UpgradeMo
               onSuccess();
               onClose();
             } else {
-              onError("Payment captured, but database verification failed.");
+              onError(verifyData.error || "Payment captured, but database verification failed.");
             }
           } catch (err: any) {
             console.error("[Razorpay Verification Error]:", err);
-            onSuccess();
-            onClose();
+            onError("Payment received, but we could not confirm it yet. If Pro doesn't appear in a few minutes, contact support.");
           }
         },
         prefill: {
@@ -320,6 +320,13 @@ export default function App() {
   const [notification, setNotification] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
 
+  // Persistent conversation identifier
+  const [conversationId, setConversationId] = useState<string>(() => {
+    return typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `conv-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  });
+
   // Supabase Auth integration states via secure backend proxy
   const [session, setSession] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -345,12 +352,91 @@ export default function App() {
     }
   };
 
+  const loadChatHistory = async (token: string) => {
+    try {
+      const res = await fetch("/api/chat-history", {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && Array.isArray(data.messages) && data.messages.length > 0) {
+        const loaded: Message[] = data.messages.map((m: any) => ({
+          id: m.id,
+          role: m.role,
+          content: m.content || "",
+          imageUrl: m.imageUrl,
+          imageDescription: m.imageDescription,
+          timestamp: m.createdAt
+            ? new Date(m.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+            : new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        }));
+        setChatMessages(loaded);
+        if (data.conversationId) {
+          setConversationId(data.conversationId);
+        }
+      } else {
+        const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        setChatMessages([
+          {
+            id: "welcome-1",
+            role: "assistant",
+            content: "Hey there! I've been waiting for you. 💖 What's on your mind today? Let's talk about anything... or we can speak in Bengali or Hindi if you like! 😉",
+            timestamp: now
+          }
+        ]);
+        const newConvId = typeof crypto !== "undefined" && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `conv-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+        setConversationId(newConvId);
+      }
+    } catch (err) {
+      console.warn("Failed to load chat history:", err);
+    }
+  };
+
+  const persistChatMessages = async (token: string, convId: string, messagesToSave: any[]) => {
+    if (!token || !messagesToSave || messagesToSave.length === 0) return;
+    try {
+      await fetch("/api/chat-history", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          conversationId: convId,
+          messages: messagesToSave.slice(0, 20)
+        })
+      });
+    } catch (e) {
+      console.warn("Failed to persist chat messages:", e);
+    }
+  };
+
   useEffect(() => {
     if (session) {
       fetchUserStatus();
+      if (session.access_token) {
+        loadChatHistory(session.access_token);
+      }
     } else {
       setIsPro(false);
       setIsAdmin(false);
+      const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      setChatMessages([
+        {
+          id: "welcome-1",
+          role: "assistant",
+          content: "Hey there! I've been waiting for you. 💖 What's on your mind today? Let's talk about anything... or we can speak in Bengali or Hindi if you like! 😉",
+          timestamp: now
+        }
+      ]);
+      const newConvId = typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `conv-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+      setConversationId(newConvId);
     }
   }, [session]);
 
@@ -646,8 +732,11 @@ export default function App() {
     const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     
     // 1. Add user message to state
+    const userMsgId = (typeof crypto !== "undefined" && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `user-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
     const userMsg: Message = {
-      id: `user-${Math.random()}`,
+      id: userMsgId,
       role: "user",
       content,
       timestamp: now
@@ -656,6 +745,20 @@ export default function App() {
     let currentMessages = [...chatMessages, userMsg];
     setChatMessages(currentMessages);
     setChatLoading(true);
+
+    const turnPersistMessages: Array<{
+      id: string;
+      role: "user" | "assistant";
+      content: string;
+      imageUrl?: string;
+      imageDescription?: string;
+    }> = [
+      {
+        id: userMsgId,
+        role: "user",
+        content,
+      }
+    ];
 
     try {
       let loopCount = 0;
@@ -695,7 +798,9 @@ export default function App() {
         }
 
         const replyTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-        const assistantMessageId = `assistant-${Math.random()}`;
+        const assistantMessageId = (typeof crypto !== "undefined" && crypto.randomUUID)
+          ? crypto.randomUUID()
+          : `assistant-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 
         // Add an empty assistant message that we will stream text into
         setChatMessages((prev) => [
@@ -789,13 +894,17 @@ export default function App() {
                 } 
               : m
           );
+          turnPersistMessages.push({
+            id: assistantMessageId,
+            role: "assistant",
+            content: accumulatedText,
+          });
         }
 
         if (functionCalls.length > 0) {
           // We have function calls! We must execute them and continue the loop.
           continueLoop = true;
 
-          // Execute all function calls in parallel
           // Execute all function calls in parallel
           const results = await Promise.all(
             functionCalls.map(async (call) => {
@@ -830,13 +939,24 @@ export default function App() {
           const imageMessages: Message[] = [];
           results.forEach((r, idx) => {
             if (functionCalls[idx].name === "generateImage" && r.success && r.output?.url) {
+              const imgId = (typeof crypto !== "undefined" && crypto.randomUUID)
+                ? crypto.randomUUID()
+                : `image-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+              const imgDesc = r.output.prompt || functionCalls[idx].args.description;
               imageMessages.push({
-                id: `image-${Math.random()}`,
+                id: imgId,
                 role: "assistant",
                 content: "",
                 timestamp: replyTime,
                 imageUrl: r.output.url,
-                imageDescription: r.output.prompt || functionCalls[idx].args.description
+                imageDescription: imgDesc
+              });
+              turnPersistMessages.push({
+                id: imgId,
+                role: "assistant",
+                content: "",
+                imageUrl: r.output.url,
+                imageDescription: imgDesc,
               });
             }
           });
@@ -884,6 +1004,11 @@ export default function App() {
         }
       }
 
+      // Persist visible messages from this completed assistant turn
+      if (session?.access_token && turnPersistMessages.length > 0) {
+        persistChatMessages(session.access_token, conversationId, turnPersistMessages);
+      }
+
     } catch (error: any) {
       console.error("[Chat] Error sending message:", error);
       const msg = error.message || "";
@@ -907,12 +1032,33 @@ export default function App() {
     }
   };
 
-  const handleClearHistory = () => {
+  const handleClearHistory = async () => {
+    const token = session?.access_token;
+    if (token) {
+      try {
+        await fetch("/api/chat-history", {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+      } catch (e) {
+        console.warn("Failed to clear chat history on server:", e);
+      }
+    }
+    const newConvId = (typeof crypto !== "undefined" && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `conv-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    setConversationId(newConvId);
     setChatMessages([]);
     triggerNotification("Chat history deleted.", "info");
   };
 
   const handleNewChat = () => {
+    const newConvId = (typeof crypto !== "undefined" && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `conv-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+    setConversationId(newConvId);
     const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     setChatMessages([
       {

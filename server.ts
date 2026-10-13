@@ -1914,6 +1914,214 @@ async function startServer() {
     }
   });
 
+  // REST API Routes for Persistent Chat History
+  // GET /api/chat-history - fetch up to last 100 messages of user's most recent conversation
+  app.get("/api/chat-history", requireAuth, async (req, res) => {
+    const userId = (req as any).userId;
+    if (!supabase) {
+      return res.json({ messages: [], conversationId: null });
+    }
+
+    try {
+      // 1. Find user's most recent conversation_id (latest created_at)
+      const { data: latestRow, error: latestErr } = await supabase
+        .from("chat_messages")
+        .select("conversation_id")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latestErr) {
+        console.warn("[chat-history] Error finding latest conversation:", latestErr.message);
+        return res.json({ messages: [], conversationId: null });
+      }
+
+      if (!latestRow || !latestRow.conversation_id) {
+        return res.json({ messages: [], conversationId: null });
+      }
+
+      const conversationId = latestRow.conversation_id;
+
+      // 2. Return up to the last 100 messages of it, oldest first
+      const { data: messagesData, error: msgErr } = await supabase
+        .from("chat_messages")
+        .select("id, role, content, image_url, image_description, created_at")
+        .eq("user_id", userId)
+        .eq("conversation_id", conversationId)
+        .order("created_at", { ascending: false })
+        .limit(100);
+
+      if (msgErr) {
+        console.warn("[chat-history] Error fetching messages:", msgErr.message);
+        return res.json({ messages: [], conversationId: null });
+      }
+
+      // Reverse so oldest is first
+      const messages = (messagesData || []).reverse().map((m: any) => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        imageUrl: m.image_url || undefined,
+        imageDescription: m.image_description || undefined,
+        createdAt: m.created_at,
+      }));
+
+      return res.json({ messages, conversationId });
+    } catch (err: any) {
+      console.error("[chat-history] Unexpected error in GET:", err);
+      return res.json({ messages: [], conversationId: null });
+    }
+  });
+
+  // POST /api/chat-history - persist user messages
+  app.post("/api/chat-history", requireAuth, async (req, res) => {
+    const userId = (req as any).userId;
+    if (!supabase) {
+      return res.json({ success: true });
+    }
+
+    try {
+      const { conversationId, messages } = req.body || {};
+
+      if (!conversationId || typeof conversationId !== "string" || conversationId.length > 64) {
+        return res.status(400).json({ error: "Invalid conversationId (must be string up to 64 chars)." });
+      }
+
+      if (!Array.isArray(messages)) {
+        return res.status(400).json({ error: "messages must be an array." });
+      }
+
+      if (messages.length > 20) {
+        return res.status(400).json({ error: "Maximum 20 messages per request." });
+      }
+
+      const validMessages: Array<{
+        id: string;
+        role: "user" | "assistant";
+        content: string;
+        imageUrl?: string;
+        imageDescription?: string;
+      }> = [];
+
+      for (const m of messages) {
+        if (!m || typeof m !== "object") continue;
+        if (!m.id || typeof m.id !== "string") continue;
+        if (m.role !== "user" && m.role !== "assistant") continue;
+
+        const content = typeof m.content === "string" ? m.content.slice(0, 8000) : "";
+        const imageUrl = typeof m.imageUrl === "string" ? m.imageUrl : undefined;
+        const imageDescription = typeof m.imageDescription === "string" ? m.imageDescription.slice(0, 1000) : undefined;
+
+        validMessages.push({
+          id: m.id,
+          role: m.role,
+          content,
+          imageUrl,
+          imageDescription,
+        });
+      }
+
+      if (validMessages.length === 0) {
+        return res.json({ success: true, count: 0 });
+      }
+
+      // Ensure we don't overwrite rows belonging to a different user
+      const ids = validMessages.map((m) => m.id);
+      const { data: existingRows, error: existingErr } = await supabase
+        .from("chat_messages")
+        .select("id, user_id")
+        .in("id", ids);
+
+      if (existingErr) {
+        console.warn("[chat-history] Error checking existing IDs:", existingErr.message);
+      }
+
+      const otherUserIds = new Set(
+        (existingRows || [])
+          .filter((row: any) => row.user_id !== userId)
+          .map((row: any) => row.id)
+      );
+
+      const safeMessages = validMessages.filter((m) => !otherUserIds.has(m.id));
+
+      if (safeMessages.length > 0) {
+        const rowsToUpsert = safeMessages.map((m) => ({
+          id: m.id,
+          user_id: userId,
+          conversation_id: conversationId,
+          role: m.role,
+          content: m.content,
+          image_url: m.imageUrl || null,
+          image_description: m.imageDescription || null,
+          created_at: new Date().toISOString(),
+        }));
+
+        const { error: upsertErr } = await supabase
+          .from("chat_messages")
+          .upsert(rowsToUpsert, { onConflict: "id" });
+
+        if (upsertErr) {
+          console.error("[chat-history] Upsert error:", upsertErr.message);
+          return res.status(500).json({ error: upsertErr.message });
+        }
+
+        // Keep only newest 500 rows per user and delete older ones
+        const { data: oldRows, error: pruneErr } = await supabase
+          .from("chat_messages")
+          .select("id")
+          .eq("user_id", userId)
+          .order("created_at", { ascending: false })
+          .range(500, 1000);
+
+        if (pruneErr) {
+          console.warn("[chat-history] Prune select warning:", pruneErr.message);
+        } else if (oldRows && oldRows.length > 0) {
+          const pruneIds = oldRows.map((r: any) => r.id);
+          const { error: pruneDeleteErr } = await supabase
+            .from("chat_messages")
+            .delete()
+            .eq("user_id", userId)
+            .in("id", pruneIds);
+
+          if (pruneDeleteErr) {
+            console.warn("[chat-history] Prune delete warning:", pruneDeleteErr.message);
+          }
+        }
+      }
+
+      return res.json({ success: true, count: safeMessages.length });
+    } catch (err: any) {
+      console.error("[chat-history] Unexpected error in POST:", err);
+      return res.status(500).json({ error: err.message || "Failed to save chat history." });
+    }
+  });
+
+  // DELETE /api/chat-history - clear authenticated user's chat history
+  app.delete("/api/chat-history", requireAuth, async (req, res) => {
+    const userId = (req as any).userId;
+    if (!supabase) {
+      return res.json({ success: true });
+    }
+
+    try {
+      const { error } = await supabase
+        .from("chat_messages")
+        .delete()
+        .eq("user_id", userId);
+
+      if (error) {
+        console.error("[chat-history] Delete error:", error.message);
+        return res.status(500).json({ error: error.message });
+      }
+
+      return res.json({ success: true });
+    } catch (err: any) {
+      console.error("[chat-history] Unexpected error in DELETE:", err);
+      return res.status(500).json({ error: err.message || "Failed to clear chat history." });
+    }
+  });
+
   // REST API Route to send a passwordless OTP/magic link
   app.post("/api/auth/otp", otpLimiter, async (req, res) => {
     const { email } = req.body;
@@ -2224,6 +2432,11 @@ async function startServer() {
     }
   });
 
+  // Razorpay Plan Configuration
+  const PLAN_MONTHLY = process.env.RAZORPAY_PLAN_MONTHLY || "plan_TLKcmhornkOwH6";
+  const PLAN_YEARLY = process.env.RAZORPAY_PLAN_YEARLY || "plan_TLKnHmEPZWLSqg";
+  const ALLOWED_PLANS = new Set([PLAN_MONTHLY, PLAN_YEARLY]);
+
   // REST API Route to create Razorpay Subscription
   app.post("/api/create-subscription", requireAuth, async (req, res) => {
     const userId = (req as any).userId;
@@ -2231,6 +2444,10 @@ async function startServer() {
 
     if (!planId) {
       return res.status(400).json({ error: "Missing required parameter 'planId'." });
+    }
+
+    if (!ALLOWED_PLANS.has(planId)) {
+      return res.status(400).json({ error: "Invalid or unsupported planId." });
     }
 
     try {
@@ -2278,54 +2495,91 @@ async function startServer() {
   // REST API Route to verify and activate subscription after frontend payment
   app.post("/api/verify-subscription", requireAuth, async (req, res) => {
     const userId = (req as any).userId;
-    const { subscription_id, payment_id } = req.body;
+    const { subscription_id, payment_id, razorpay_signature } = req.body;
 
-    if (!subscription_id) {
-      return res.status(400).json({ error: "Missing subscription_id." });
+    if (!subscription_id || !payment_id || !razorpay_signature) {
+      return res.status(400).json({ error: "Missing subscription_id, payment_id, or razorpay_signature." });
     }
 
     if (!supabase) {
-      return res.json({ success: true, isPro: true, message: "Subscription verified (in-memory mode)." });
+      return res.status(503).json({ error: "Database not configured." });
     }
 
     try {
-      let plan_type = req.body?.plan_type === "yearly" ? "yearly" : "monthly";
-      let currentPeriodEnd: string | null = null;
-
-      // Call Razorpay REST API to fetch real end timestamp and plan_id
-      try {
-        const keyId = process.env.RAZORPAY_KEY_ID;
-        const keySecret = process.env.RAZORPAY_KEY_SECRET;
-
-        if (keyId) {
-          const authHeader = "Basic " + Buffer.from(`${keyId}:${keySecret || ""}`).toString("base64");
-          const rzpResponse = await axios.get(
-            `https://api.razorpay.com/v1/subscriptions/${subscription_id}`,
-            {
-              headers: {
-                Authorization: authHeader,
-              },
-              timeout: 10000,
-            }
-          );
-          const rzpSub = rzpResponse.data;
-          if (rzpSub) {
-            // Detect plan type by comparing rzpSub.plan_id against known yearly plan ID plan_TLKnHmEPZWLSqg
-            plan_type = rzpSub.plan_id === "plan_TLKnHmEPZWLSqg" ? "yearly" : "monthly";
-
-            if (rzpSub.current_end) {
-              currentPeriodEnd = new Date(rzpSub.current_end * 1000).toISOString();
-            } else if (rzpSub.end_at) {
-              currentPeriodEnd = new Date(rzpSub.end_at * 1000).toISOString();
-            }
-          }
-        }
-      } catch (rzpErr: any) {
-        console.warn("[Razorpay] Failed to fetch subscription details from Razorpay API, falling back to calculation:", rzpErr?.response?.data || rzpErr?.message || rzpErr);
+      const keySecret = process.env.RAZORPAY_KEY_SECRET;
+      if (!keySecret) {
+        console.error("[Razorpay] RAZORPAY_KEY_SECRET is not configured.");
+        return res.status(500).json({ error: "Server payment configuration error." });
       }
 
-      // If Razorpay fetch fails or did not provide an end date, fall back to calculation
-      if (!currentPeriodEnd) {
+      // Verify HMAC-SHA256 signature
+      const expectedSignature = crypto
+        .createHmac("sha256", keySecret)
+        .update(`${payment_id}|${subscription_id}`)
+        .digest("hex");
+
+      const expectedBuf = Buffer.from(expectedSignature, "utf8");
+      const actualBuf = Buffer.from(String(razorpay_signature), "utf8");
+
+      if (expectedBuf.length !== actualBuf.length || !crypto.timingSafeEqual(expectedBuf, actualBuf)) {
+        console.warn(`[Razorpay] Payment signature mismatch for subscription ${subscription_id}, user ${userId}`);
+        return res.status(400).json({ error: "Invalid payment signature." });
+      }
+
+      const keyId = process.env.RAZORPAY_KEY_ID;
+      if (!keyId) {
+        console.error("[Razorpay] RAZORPAY_KEY_ID is not configured.");
+        return res.status(500).json({ error: "Server payment configuration error." });
+      }
+
+      // Fetch subscription from Razorpay REST API
+      let rzpSub: any;
+      try {
+        const authHeader = "Basic " + Buffer.from(`${keyId}:${keySecret}`).toString("base64");
+        const rzpResponse = await axios.get(
+          `https://api.razorpay.com/v1/subscriptions/${subscription_id}`,
+          {
+            headers: {
+              Authorization: authHeader,
+            },
+            timeout: 10000,
+          }
+        );
+        rzpSub = rzpResponse.data;
+      } catch (rzpErr: any) {
+        console.error("[Razorpay] Failed to fetch subscription from Razorpay:", rzpErr?.response?.data || rzpErr?.message || rzpErr);
+        return res.status(502).json({ error: "Could not verify payment, please contact support" });
+      }
+
+      if (!rzpSub) {
+        return res.status(502).json({ error: "Could not verify payment, please contact support" });
+      }
+
+      // Only activate if ALL are true:
+      // - rzpSub.status is "active" or "authenticated"
+      // - rzpSub.notes?.user_id === the authenticated userId
+      // - rzpSub.plan_id is in ALLOWED_PLANS
+      const isStatusValid = rzpSub.status === "active" || rzpSub.status === "authenticated";
+      const isOwnerValid = rzpSub.notes?.user_id === userId;
+      const isPlanValid = ALLOWED_PLANS.has(rzpSub.plan_id);
+
+      if (!isStatusValid || !isOwnerValid || !isPlanValid) {
+        console.warn(
+          `[Razorpay] Verification failed: status=${rzpSub.status}, notesUserId=${rzpSub.notes?.user_id}, authUserId=${userId}, planId=${rzpSub.plan_id}`
+        );
+        return res.status(400).json({ error: "Subscription criteria not met or unauthorized." });
+      }
+
+      // Derive plan_type from rzpSub.plan_id only. Ignore any plan_type sent by client.
+      const plan_type = rzpSub.plan_id === PLAN_YEARLY ? "yearly" : "monthly";
+
+      // Use Razorpay's current_end or end_at for current_period_end. Keep 30/365-day fallback only for date calculation.
+      let currentPeriodEnd: string;
+      if (rzpSub.current_end) {
+        currentPeriodEnd = new Date(rzpSub.current_end * 1000).toISOString();
+      } else if (rzpSub.end_at) {
+        currentPeriodEnd = new Date(rzpSub.end_at * 1000).toISOString();
+      } else {
         const daysToAdd = plan_type === "yearly" ? 365 : 30;
         currentPeriodEnd = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000).toISOString();
       }
@@ -2359,41 +2613,43 @@ async function startServer() {
   // REST API Route for Razorpay Webhook
   app.post("/api/razorpay-webhook", async (req, res) => {
     try {
-      const secret = process.env.RAZORPAY_WEBHOOK_SECRET || process.env.RAZORPAY_KEY_SECRET;
-      const signature = req.headers["x-razorpay-signature"] as string;
+      const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+      if (!secret) {
+        console.error("[Razorpay Webhook] RAZORPAY_WEBHOOK_SECRET environment variable is not configured.");
+        return res.status(500).json({ error: "Webhook secret not configured." });
+      }
 
-      const rawBody = req.body instanceof Buffer ? req.body.toString() : JSON.stringify(req.body);
+      const signature = req.headers["x-razorpay-signature"] as string | undefined;
+      if (!signature) {
+        console.warn("[Razorpay Webhook] Missing x-razorpay-signature header.");
+        return res.status(400).json({ error: "Missing signature header." });
+      }
 
-      if (secret && signature) {
-        try {
-          const expectedSignature = crypto
-            .createHmac("sha256", secret)
-            .update(rawBody)
-            .digest("hex");
-          if (expectedSignature !== signature) {
-            console.warn("[Razorpay Webhook] Signature verification mismatch — rejecting.");
-            return res.status(400).json({ error: "Invalid webhook signature." });
-          }
-        } catch (e) {
-          console.warn("[Razorpay Webhook] Failed to verify signature:", e);
-        }
+      const rawBuffer = Buffer.isBuffer(req.body)
+        ? req.body
+        : typeof req.body === "string"
+        ? Buffer.from(req.body, "utf8")
+        : Buffer.from(JSON.stringify(req.body || {}), "utf8");
+
+      const expectedSignature = crypto
+        .createHmac("sha256", secret)
+        .update(rawBuffer)
+        .digest("hex");
+
+      const expectedBuf = Buffer.from(expectedSignature, "utf8");
+      const actualBuf = Buffer.from(signature, "utf8");
+
+      if (expectedBuf.length !== actualBuf.length || !crypto.timingSafeEqual(expectedBuf, actualBuf)) {
+        console.warn("[Razorpay Webhook] Signature verification mismatch — rejecting.");
+        return res.status(400).json({ error: "Invalid webhook signature." });
       }
 
       let parsedBody: any = {};
-      if (req.body instanceof Buffer) {
-        try {
-          parsedBody = JSON.parse(rawBody);
-        } catch (e) {
-          console.warn("[Razorpay Webhook] Failed to parse raw body JSON:", e);
-        }
-      } else if (typeof req.body === "string") {
-        try {
-          parsedBody = JSON.parse(req.body);
-        } catch (e) {
-          parsedBody = {};
-        }
-      } else {
-        parsedBody = req.body || {};
+      try {
+        parsedBody = JSON.parse(rawBuffer.toString("utf8"));
+      } catch (e) {
+        console.warn("[Razorpay Webhook] Failed to parse raw body JSON:", e);
+        return res.status(400).json({ error: "Invalid JSON body." });
       }
 
       const event = parsedBody?.event;
@@ -2402,11 +2658,11 @@ async function startServer() {
       console.log(`[Razorpay Webhook] Received event: ${event}`);
 
       if (payload) {
-        const entity = payload.subscription?.entity || payload.payment?.entity;
+        const entity = payload.subscription?.entity;
         const userId = entity?.notes?.user_id;
 
         if (userId && supabase) {
-          const plan_type = entity?.plan_id === "plan_TLKnHmEPZWLSqg" ? "yearly" : "monthly";
+          const plan_type = entity?.plan_id === PLAN_YEARLY ? "yearly" : "monthly";
           const daysToAdd = plan_type === "yearly" ? 365 : 30;
           let currentPeriodEnd = new Date(Date.now() + daysToAdd * 24 * 60 * 60 * 1000).toISOString();
           if (entity.current_end) {
