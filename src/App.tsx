@@ -647,13 +647,15 @@ export default function App() {
   } = useVoiceConnection({
     selectedMicId,
     onVoiceError: (errorMsg) => {
-      if (errorMsg === "VOICE_LIMIT_REACHED") {
-        triggerNotification("You've used your voice minutes for today 🌸 Resets at midnight IST", "info");
-      } else if (
+      const isLocked =
         errorMsg === "TOOL_LOCKED" ||
         errorMsg === "IMAGE_LOCKED" ||
-        errorMsg === "CHAT_LIMIT_REACHED"
-      ) {
+        errorMsg.includes("TOOL_LOCKED") ||
+        errorMsg.includes("IMAGE_LOCKED");
+
+      if (errorMsg === "VOICE_LIMIT_REACHED") {
+        triggerNotification("You've used your voice minutes for today 🌸 Resets at midnight IST", "info");
+      } else if (isLocked || errorMsg === "CHAT_LIMIT_REACHED") {
         setShowUpgradeModal(true);
       } else if (
         errorMsg === "PRO_IMAGE_LIMIT_REACHED" ||
@@ -697,6 +699,11 @@ export default function App() {
       }
     },
     onToolCallExecuted: (logMessage) => {
+      const isLocked = logMessage.includes("TOOL_LOCKED") || logMessage.includes("IMAGE_LOCKED");
+      if (isLocked) {
+        setShowUpgradeModal(true);
+        return;
+      }
       // Feed voice-mode tool logs into the chat history for seamless session integrity
       const now = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       setChatMessages((prev) => [
@@ -916,11 +923,13 @@ export default function App() {
                 setIsChatGeneratingImage(false);
               }
               // Trigger a subtle in-app floating banner for tool executions or open upgrade modal on limits
-              if (
+              const isLocked =
                 result.message === "TOOL_LOCKED" ||
                 result.message === "IMAGE_LOCKED" ||
-                result.message === "CHAT_LIMIT_REACHED"
-              ) {
+                result.message.includes("TOOL_LOCKED") ||
+                result.message.includes("IMAGE_LOCKED");
+
+              if (isLocked || result.message === "CHAT_LIMIT_REACHED") {
                 setShowUpgradeModal(true);
               } else if (
                 result.message === "PRO_IMAGE_LIMIT_REACHED" ||
@@ -1012,11 +1021,13 @@ export default function App() {
     } catch (error: any) {
       console.error("[Chat] Error sending message:", error);
       const msg = error.message || "";
-      if (
-        msg === "CHAT_LIMIT_REACHED" ||
+      const isLocked =
         msg === "TOOL_LOCKED" ||
-        msg === "IMAGE_LOCKED"
-      ) {
+        msg === "IMAGE_LOCKED" ||
+        msg.includes("TOOL_LOCKED") ||
+        msg.includes("IMAGE_LOCKED");
+
+      if (msg === "CHAT_LIMIT_REACHED" || isLocked) {
         setShowUpgradeModal(true);
       } else if (
         msg === "PRO_IMAGE_LIMIT_REACHED" ||

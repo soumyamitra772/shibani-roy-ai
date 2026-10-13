@@ -203,7 +203,7 @@ Fully multilingual: English, Hindi, Bengali, Hinglish, Banglish. Auto-detect the
 ## TOOLS AVAILABLE
 openWebsite, searchGoogle, openYouTube, openMaps, copyToClipboard, getWeather, getLatestNews, searchWeb, rememberFact, recallFacts, recommendSongByMood, generateImage, playMusic`;
 
-function getSystemInstruction(memoriesList: MemoryItem[] = []): string {
+function getSystemInstruction(memoriesList: MemoryItem[] = [], isFreeUser: boolean = false): string {
   const now = new Date();
   const kolkataDate = now.toLocaleDateString("en-US", {
     timeZone: "Asia/Kolkata",
@@ -220,13 +220,26 @@ function getSystemInstruction(memoriesList: MemoryItem[] = []): string {
       ).join("\n")
     : `\n## USER MEMORIES\n- None yet. Save key details with rememberFact as you learn them! 😊`;
 
+  const freeRulesSection = isFreeUser
+    ? `\n\n## FREE PLAN RULES
+- The user is on the free plan.
+- These features need Pro: live web search and news (searchWeb, getLatestNews), live weather (getWeather), photos/selfies (generateImage), and remembering things long-term (rememberFact, recallFacts).
+- Music playback and standard conversations are completely free. Do NOT lock, block, or mention Pro for music or normal chat.
+- When the user asks for any Pro-only feature (e.g., asking for photos/selfies, weather, latest news, live web search, or asking you to remember things across chats):
+  - Do NOT refuse abruptly or say you cannot do it technically.
+  - Never mention or output raw error codes like "TOOL_LOCKED" or "IMAGE_LOCKED".
+  - Warmly and politely explain in the user's own conversation language (English, Hindi, Bengali, Hinglish, Banglish, etc.) that this is a Shibani Pro feature.
+  - Gently tell them how they can unlock it by upgrading to Pro from the Upgrade button in the header or top menu.
+  - Maintain your charming, friendly, and affectionate personality as Shibani Roy.`
+    : "";
+
   return `${COMPANION_SYSTEM_INSTRUCTION}
 
 ## REAL-TIME CONTEXT
 - Date (Kolkata): ${kolkataDate}
 - Time (Kolkata): ${kolkataTime}
 - Year: ${now.getFullYear()} — use this year in all search queries for live/recent data.
-${memoriesSection}`;
+${memoriesSection}${freeRulesSection}`;
 }
 
 async function getOrCreateMemory(userId: string): Promise<MemoryItem[]> {
@@ -287,6 +300,16 @@ CONTEXT:
 - No real-time tools available on Telegram. If asked for live scores, weather, or news: honestly say you can't access that here, and invite them to try the full Shibani Roy app for those features.`;
 }
 // ── END TELEGRAM SYSTEM PROMPT ───────────────────────────────────
+
+// Shared Pro-only tools for free users (Single source of truth)
+const FREE_LOCKED_TOOLS = new Set([
+  "searchWeb",
+  "getLatestNews",
+  "getWeather",
+  "generateImage",
+  "rememberFact",
+  "recallFacts",
+]);
 
 const FUNCTION_DECLARATIONS = [
   {
@@ -1771,19 +1794,16 @@ async function startServer() {
 
       // Determine if user is Pro — controls which tools and features are available
       const userIsProOrAdmin = isAdmin(userId) || await isPro(userId);
+      const isFreeUser = !userIsProOrAdmin;
 
       // Fetch user's existing memories (Pro-only feature)
       const memories = userIsProOrAdmin && userId ? await recallFactsFromDb(String(userId)) : [];
-      const systemInstruction = getSystemInstruction(memories);
+      const systemInstruction = getSystemInstruction(memories, isFreeUser);
 
       // Free users get a stripped-down tool set (no search, images, memory)
-      const PRO_ONLY_TOOLS = new Set([
-        "searchWeb", "getLatestNews", "getWeather",
-        "generateImage", "rememberFact", "recallFacts",
-      ]);
       const availableDeclarations = userIsProOrAdmin
         ? FUNCTION_DECLARATIONS
-        : FUNCTION_DECLARATIONS.filter((d: any) => !PRO_ONLY_TOOLS.has(d.name));
+        : FUNCTION_DECLARATIONS.filter((d: any) => !FREE_LOCKED_TOOLS.has(d.name));
 
       // Set headers for SSE streaming
       res.setHeader("Content-Type", "text/event-stream");
@@ -2820,15 +2840,12 @@ async function startServer() {
 
             try {
               const wsMemories = userIsProOrAdmin ? await recallFactsFromDb(userId) : [];
-              const systemInstruction = getSystemInstruction(wsMemories);
+              const isFreeUser = !userIsProOrAdmin;
+              const systemInstruction = getSystemInstruction(wsMemories, isFreeUser);
 
-              const WS_PRO_ONLY_TOOLS = new Set([
-                "searchWeb", "getLatestNews", "getWeather",
-                "generateImage", "rememberFact", "recallFacts",
-              ]);
               const wsAvailableDeclarations = userIsProOrAdmin
                 ? FUNCTION_DECLARATIONS
-                : FUNCTION_DECLARATIONS.filter((d: any) => !WS_PRO_ONLY_TOOLS.has(d.name));
+                : FUNCTION_DECLARATIONS.filter((d: any) => !FREE_LOCKED_TOOLS.has(d.name));
 
               session = await ai.live.connect({
                 model: "gemini-3.1-flash-live-preview",

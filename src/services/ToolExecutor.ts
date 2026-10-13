@@ -18,9 +18,12 @@ async function handleResponseError(response: Response, defaultMessage: string): 
   const errorMessage = errData.error || defaultMessage;
 
   if (response.status === 429 && typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("shibani-notification", {
-      detail: { message: errorMessage, type: "error" }
-    }));
+    // Free users must never see raw lock codes or generic error toasts for Pro-only features
+    if (errorMessage !== "TOOL_LOCKED" && errorMessage !== "IMAGE_LOCKED") {
+      window.dispatchEvent(new CustomEvent("shibani-notification", {
+        detail: { message: errorMessage, type: "error" }
+      }));
+    }
   }
 
   throw new Error(errorMessage);
