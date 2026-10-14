@@ -2845,6 +2845,50 @@ async function startServer() {
     return res.json({ isPro: pro, isAdmin: admin, userId });
   });
 
+  // Phone pickup greetings pool
+  const PHONE_PICKUP_GREETINGS = [
+    "Hello! Bolo, kemon acho?",
+    "Haan bolo! Shunchhi.",
+    "Hello! Ki khobor bolo?",
+    "Hey! Bolo bolo, ami achhi.",
+    "Haan bolo, ki korchho?",
+    "Hello! Kemon achho bolo?",
+    "Haan, shunchhi! Kemon cholchhe sob?",
+    "Hey! Bhalo achho to? Bolo ki byapar.",
+    "Hello! Haan bolo, shunchhi ami.",
+    "Hey! Kemon cholchhe tomar din? Bolo.",
+    "Haan bolo! Sob thikthak to?",
+    "Hello re! Ki khobor tomar?"
+  ];
+
+  /**
+   * Injects context or an instruction into the Gemini Live session safely.
+   */
+  async function injectNotice(session: any, text: string): Promise<void> {
+    if (!session) return;
+    try {
+      if (typeof session.sendRealtimeInput === "function") {
+        session.sendRealtimeInput({ text });
+        return;
+      }
+    } catch (e1) {
+      // If sendRealtimeInput fails/disallows text payload, try sendClientContent
+    }
+
+    try {
+      if (typeof session.sendClientContent === "function") {
+        session.sendClientContent({
+          turns: [{ role: "user", parts: [{ text }] }],
+          turnComplete: true
+        });
+        return;
+      }
+    } catch (err: any) {
+      console.warn("Failed to inject notice into Gemini Live session:", err);
+      Sentry.captureException(err, { tags: { feature: "voice" } });
+    }
+  }
+
   // Setup WebSocket Server for Gemini Live API
   const wss = new WebSocketServer({ server, path: "/api/live-ws" });
 
@@ -2856,6 +2900,7 @@ async function startServer() {
     let voiceSessionStart = 0;
     let sessionRecorded = false;
     let voiceCheckInterval: any = null;
+    let hasSentGreeting = false;
 
     const authTimeout = setTimeout(() => {
       if (!isAuthenticated) {
@@ -3024,7 +3069,14 @@ async function startServer() {
             return;
           }
         } else {
-          if (msg.type === "audio" && msg.data) {
+          if (msg.type === "pickedUp") {
+            if (isAuthenticated && session && !hasSentGreeting) {
+              hasSentGreeting = true;
+              const greeting = PHONE_PICKUP_GREETINGS[Math.floor(Math.random() * PHONE_PICKUP_GREETINGS.length)];
+              const prompt = `System/context: The user just called you and the call connected. Pick up the phone and say exactly this greeting out loud naturally: "${greeting}"`;
+              await injectNotice(session, prompt);
+            }
+          } else if (msg.type === "audio" && msg.data) {
             if (session) {
               session.sendRealtimeInput({
                 audio: { data: msg.data, mimeType: "audio/pcm;rate=16000" }

@@ -67,6 +67,7 @@ export function useVoiceConnection({
   const isDisconnectingGracefullyRef = useRef<boolean>(false);
   const isQuotaHangupRef = useRef<boolean>(false);
   const isSilenceHangupRef = useRef<boolean>(false);
+  const hasSentPickedUpRef = useRef<boolean>(false);
 
   const callPhaseRef = useRef<CallPhase>(callPhase);
   const updateCallPhase = useCallback((phase: CallPhase) => {
@@ -522,6 +523,7 @@ export function useVoiceConnection({
     isDisconnectingGracefullyRef.current = false;
     isQuotaHangupRef.current = false;
     isSilenceHangupRef.current = false;
+    hasSentPickedUpRef.current = false;
     lastAudioActivityRef.current = Date.now();
     setFailureReason(null);
     setIsCallDropped(false);
@@ -745,6 +747,16 @@ export function useVoiceConnection({
                   updateCallPhase("active");
                   stopRingback();
                   playPickupBlip();
+
+                  // Send pickedUp signal so Shibani speaks the opening greeting
+                  if (!hasSentPickedUpRef.current && ws.readyState === WebSocket.OPEN) {
+                    hasSentPickedUpRef.current = true;
+                    try {
+                      ws.send(JSON.stringify({ type: "pickedUp" }));
+                    } catch (e) {
+                      console.warn("[AudioEngine] Error sending pickedUp message:", e);
+                    }
+                  }
                 }
               }, remainingRing);
               break;
