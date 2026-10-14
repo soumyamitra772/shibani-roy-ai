@@ -19,6 +19,7 @@ import LoginScreen from "./components/LoginScreen";
 import AdminPanel from "./components/AdminPanel";
 import { supabase } from "./utils/supabaseClient";
 import { getActiveAvatar, getAvatarPreference, saveAvatarPreference } from "./utils/avatarUtils";
+import { stopAllCallSounds } from "./utils/callSounds";
 
 interface UpgradeModalProps {
   session: any;
@@ -638,8 +639,16 @@ export default function App() {
   // Wire up the custom voice engine with expanded callbacks
   const {
     state,
+    callPhase,
+    failureReason,
+    isCallDropped,
     isMuted,
     volumesRef,
+    remainingSeconds,
+    limitSeconds,
+    is1MinWarningActive,
+    isSilenceHangup,
+    isQuotaHangup,
     connect,
     disconnect,
     toggleMute,
@@ -1084,7 +1093,8 @@ export default function App() {
 
   // Disconnect voice session if the user switches to chat mode to preserve bandwidth/connections
   const handleModeChange = (newMode: InteractionMode) => {
-    if (newMode === "chat" && state !== "disconnected") {
+    if (newMode === "chat") {
+      stopAllCallSounds();
       disconnect();
     }
     setMode(newMode);
@@ -1173,6 +1183,14 @@ export default function App() {
                         isGeneratingImage={isVoiceGeneratingImage}
                         avatarUrl={activeAvatarUrl}
                         onMicChange={setSelectedMicId}
+                        callPhase={callPhase}
+                        failureReason={failureReason}
+                        isCallDropped={isCallDropped}
+                        remainingSeconds={remainingSeconds}
+                        limitSeconds={limitSeconds}
+                        is1MinWarningActive={is1MinWarningActive}
+                        isSilenceHangup={isSilenceHangup}
+                        isQuotaHangup={isQuotaHangup}
                       />
                     </div>
 

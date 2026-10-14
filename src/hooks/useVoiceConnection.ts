@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  * 
  * Includes Bluetooth microphone selection & built-in mic auto-detection for Android.
+ * Integrates telecom call lifecycle: ringback tone, minimum ring time, call timer support,
+ * and telecom operator voice message on call failures.
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -10,6 +12,22 @@ import { AssistantState, ToolCallPayload } from "../types";
 import { float32ToPcm16Base64, pcm16Base64ToFloat32 } from "../utils/audioUtils";
 import { ToolExecutor } from "../services/ToolExecutor";
 import { getAuthenticatedToken } from "../utils/userId";
+import {
+  startRingback,
+  stopRingback,
+  playPickupBlip,
+  playHangupTone,
+  playDroppedTone,
+  playOperatorTones,
+  speakOperatorMessage,
+  playWarningChime,
+  speakGoodbyeMessage,
+  stopAllCallSounds,
+  getSoundAudioContext,
+} from "../utils/callSounds";
+
+export type CallPhase = "idle" | "ringing" | "active" | "ended" | "failed";
+export type FailureReason = "mic" | "limit" | "timeout" | "server" | null;
 
 interface UseVoiceConnectionProps {
   onToolCallExecuted?: (message: string) => void;
@@ -29,8 +47,42 @@ export function useVoiceConnection({
   selectedMicId,
 }: UseVoiceConnectionProps = {}) {
   const [state, setState] = useState<AssistantState>("disconnected");
+  const [callPhase, setCallPhase] = useState<CallPhase>("idle");
+  const [failureReason, setFailureReason] = useState<FailureReason>(null);
+  const [isCallDropped, setIsCallDropped] = useState<boolean>(false);
   const [isMuted, setIsMuted] = useState(false);
+
+  // Second-based voice metering & limit states
+  const [remainingSeconds, setRemainingSeconds] = useState<number | null>(null);
+  const [limitSeconds, setLimitSeconds] = useState<number | null>(null);
+  const [is1MinWarningActive, setIs1MinWarningActive] = useState(false);
+  const [isSilenceHangup, setIsSilenceHangup] = useState(false);
+  const [isQuotaHangup, setIsQuotaHangup] = useState(false);
+
+  const remainingSecondsRef = useRef<number | null>(null);
+  const lastAudioActivityRef = useRef<number>(Date.now());
+  const hasWarned1MinRef = useRef<boolean>(false);
+  const hasHandledLimitRef = useRef<boolean>(false);
+  const hasHandledSilenceRef = useRef<boolean>(false);
+  const isDisconnectingGracefullyRef = useRef<boolean>(false);
+  const isQuotaHangupRef = useRef<boolean>(false);
+  const isSilenceHangupRef = useRef<boolean>(false);
+
+  const callPhaseRef = useRef<CallPhase>(callPhase);
+  const updateCallPhase = useCallback((phase: CallPhase) => {
+    callPhaseRef.current = phase;
+    setCallPhase(phase);
+  }, []);
+
   const volumesRef = useRef({ mic: 0, speaker: 0 });
+
+  // Call lifecycle refs
+  const wasEverActiveRef = useRef<boolean>(false);
+  const callStartTimeRef = useRef<number>(0);
+  const connectingTimeoutRef = useRef<any>(null);
+  const minRingTimeoutRef = useRef<any>(null);
+  const endedPhaseTimerRef = useRef<any>(null);
+  const hasHandledFailureRef = useRef<boolean>(false);
 
   // Connection-specific refs
   const wsRef = useRef<WebSocket | null>(null);
@@ -136,11 +188,10 @@ export function useVoiceConnection({
   }, []);
 
   /**
-   * Close and clean up all connections, contexts, and audio nodes
+   * Internal low-level audio & websocket cleanup without mutating callPhase
    */
-  const disconnect = useCallback(() => {
-    console.log("[AudioEngine] Initiating clean disconnect...");
-    setState("disconnected");
+  const internalDisconnect = useCallback(() => {
+    console.log("[AudioEngine] Internal cleanup...");
 
     // Release Screen Wake Lock
     releaseWakeLock();
@@ -153,7 +204,9 @@ export function useVoiceConnection({
 
     // Close WebSocket
     if (wsRef.current) {
-      wsRef.current.close();
+      try {
+        wsRef.current.close();
+      } catch (e) {}
       wsRef.current = null;
     }
 
@@ -210,7 +263,190 @@ export function useVoiceConnection({
 
     volumesRef.current.mic = 0;
     volumesRef.current.speaker = 0;
-  }, [stopPlayback]);
+  }, [stopPlayback, releaseWakeLock]);
+
+  /**
+   * Handles call failure before reaching "active" phase:
+   * Sets failure reason, stops ringback, plays operator tones, and speaks operator message.
+   */
+  const failCall = useCallback((reason: FailureReason) => {
+    if (hasHandledFailureRef.current) return;
+    hasHandledFailureRef.current = true;
+
+    if (connectingTimeoutRef.current) {
+      clearTimeout(connectingTimeoutRef.current);
+      connectingTimeoutRef.current = null;
+    }
+    if (minRingTimeoutRef.current) {
+      clearTimeout(minRingTimeoutRef.current);
+      minRingTimeoutRef.current = null;
+    }
+
+    stopRingback();
+    setFailureReason(reason);
+    updateCallPhase("failed");
+    setState("error");
+
+    internalDisconnect();
+
+    if (reason) {
+      playOperatorTones().then(() => {
+        speakOperatorMessage(reason);
+      });
+    }
+  }, [internalDisconnect, updateCallPhase]);
+
+  /**
+   * Close and clean up all connections, contexts, and audio nodes.
+   * If isUserHangup is true, plays single hangup tone.
+   * If dropped unexpectedly after active, plays two-tone drop sound.
+   */
+  const disconnect = useCallback((isUserHangup: boolean = false) => {
+    console.log("[AudioEngine] Initiating disconnect... isUserHangup:", isUserHangup);
+
+    if (connectingTimeoutRef.current) {
+      clearTimeout(connectingTimeoutRef.current);
+      connectingTimeoutRef.current = null;
+    }
+    if (minRingTimeoutRef.current) {
+      clearTimeout(minRingTimeoutRef.current);
+      minRingTimeoutRef.current = null;
+    }
+
+    stopRingback();
+
+    if (callPhaseRef.current === "ringing" && isUserHangup) {
+      // User cancelled call while it was ringing
+      playHangupTone();
+      updateCallPhase("idle");
+      setState("disconnected");
+    } else if (wasEverActiveRef.current) {
+      wasEverActiveRef.current = false;
+      const isPoliteEnd = isUserHangup || isQuotaHangupRef.current || isSilenceHangupRef.current;
+      if (isPoliteEnd) {
+        playHangupTone();
+        setIsCallDropped(false);
+      } else {
+        playDroppedTone();
+        setIsCallDropped(true);
+      }
+      updateCallPhase("ended");
+      setState("disconnected");
+
+      if (endedPhaseTimerRef.current) clearTimeout(endedPhaseTimerRef.current);
+      endedPhaseTimerRef.current = setTimeout(() => {
+        updateCallPhase("idle");
+        setIsCallDropped(false);
+        setIsQuotaHangup(false);
+        setIsSilenceHangup(false);
+        isQuotaHangupRef.current = false;
+        isSilenceHangupRef.current = false;
+      }, 4000);
+    } else if (callPhaseRef.current !== "failed") {
+      updateCallPhase("idle");
+      setState("disconnected");
+    } else {
+      setState("disconnected");
+    }
+
+    internalDisconnect();
+  }, [internalDisconnect, updateCallPhase]);
+
+  /**
+   * Graceful spoken goodbye when daily limit is reached during call
+   */
+  const triggerGracefulLimitEnd = useCallback(() => {
+    if (isDisconnectingGracefullyRef.current) return;
+    isDisconnectingGracefullyRef.current = true;
+    isQuotaHangupRef.current = true;
+    setIsQuotaHangup(true);
+
+    isMutedRef.current = true;
+    setIsMuted(true);
+
+    speakGoodbyeMessage("limit").then(() => {
+      disconnect(false);
+      isDisconnectingGracefullyRef.current = false;
+    });
+  }, [disconnect]);
+
+  /**
+   * Graceful spoken goodbye when call is inactive for about 1 minute
+   */
+  const triggerGracefulSilenceEnd = useCallback(() => {
+    if (isDisconnectingGracefullyRef.current || hasHandledSilenceRef.current) return;
+    hasHandledSilenceRef.current = true;
+    isDisconnectingGracefullyRef.current = true;
+    isSilenceHangupRef.current = true;
+    setIsSilenceHangup(true);
+
+    isMutedRef.current = true;
+    setIsMuted(true);
+
+    speakGoodbyeMessage("silence").then(() => {
+      disconnect(false);
+      isDisconnectingGracefullyRef.current = false;
+    });
+  }, [disconnect]);
+
+  // Fetch initial quota on mount
+  const fetchVoiceQuota = useCallback(async () => {
+    try {
+      const token = getAuthenticatedToken();
+      if (!token) return;
+      const res = await fetch("/api/voice-quota", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (typeof data.remainingSeconds === "number") {
+          setRemainingSeconds(data.remainingSeconds);
+          remainingSecondsRef.current = data.remainingSeconds;
+        }
+        if (typeof data.limitSeconds === "number") {
+          setLimitSeconds(data.limitSeconds);
+        }
+      }
+    } catch (e) {
+      console.warn("[Voice] Error fetching voice quota:", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchVoiceQuota();
+  }, [fetchVoiceQuota]);
+
+  // Active call countdown timer & 1-minute warning trigger
+  useEffect(() => {
+    let interval: any = null;
+    if (callPhase === "active") {
+      interval = setInterval(() => {
+        if (isDisconnectingGracefullyRef.current) return;
+        setRemainingSeconds((prev) => {
+          if (prev === null) return null;
+          const next = Math.max(0, prev - 1);
+          remainingSecondsRef.current = next;
+
+          if (next === 60 && !hasWarned1MinRef.current) {
+            hasWarned1MinRef.current = true;
+            playWarningChime();
+            setIs1MinWarningActive(true);
+            setTimeout(() => setIs1MinWarningActive(false), 5000);
+          }
+
+          if (next === 0 && !hasHandledLimitRef.current) {
+            hasHandledLimitRef.current = true;
+            triggerGracefulLimitEnd();
+          }
+
+          return next;
+        });
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [callPhase, triggerGracefulLimitEnd]);
 
   /**
    * Schedules a base64 PCM chunk for gapless synchronized playback
@@ -261,8 +497,56 @@ export function useVoiceConnection({
    * Establishes full-duplex WebSocket connection to our Express Live WS gateway
    */
   const connect = useCallback(async () => {
-    disconnect();
+    // Resume sound audio context during user click gesture
+    getSoundAudioContext();
+
+    // Reset failure and call duration states
+    if (endedPhaseTimerRef.current) {
+      clearTimeout(endedPhaseTimerRef.current);
+      endedPhaseTimerRef.current = null;
+    }
+    if (connectingTimeoutRef.current) {
+      clearTimeout(connectingTimeoutRef.current);
+      connectingTimeoutRef.current = null;
+    }
+    if (minRingTimeoutRef.current) {
+      clearTimeout(minRingTimeoutRef.current);
+      minRingTimeoutRef.current = null;
+    }
+
+    hasHandledFailureRef.current = false;
+    wasEverActiveRef.current = false;
+    hasWarned1MinRef.current = false;
+    hasHandledLimitRef.current = false;
+    hasHandledSilenceRef.current = false;
+    isDisconnectingGracefullyRef.current = false;
+    isQuotaHangupRef.current = false;
+    isSilenceHangupRef.current = false;
+    lastAudioActivityRef.current = Date.now();
+    setFailureReason(null);
+    setIsCallDropped(false);
+    setIsSilenceHangup(false);
+    setIsQuotaHangup(false);
+    setIs1MinWarningActive(false);
+
+    // Stop all background call sounds or active operator speech
+    stopAllCallSounds();
+
+    // Clean up internal connections cleanly before starting new call
+    internalDisconnect();
+
     setState("connecting");
+    updateCallPhase("ringing");
+
+    // Start ringback tone immediately
+    startRingback();
+    callStartTimeRef.current = Date.now();
+
+    // Treat a connection staying in connecting for more than 15s as timeout failure
+    connectingTimeoutRef.current = setTimeout(() => {
+      console.warn("[AudioEngine] Connection timed out after 15s");
+      failCall("timeout");
+    }, 15000);
 
     try {
       // Request Screen Wake Lock on connect
@@ -327,16 +611,6 @@ export function useVoiceConnection({
       audioEl.play().catch((err) => {
         console.warn("[AudioEngine] Error playing programmatic HTML5 audio element:", err);
       });
-
-      // Log available devices for testing/debugging purposes
-      if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
-        navigator.mediaDevices.enumerateDevices().then((devices) => {
-          console.log(
-            "[AudioEngine] Initialized devices:",
-            devices.map((d) => `${d.kind}: ${d.label} (ID: ${d.deviceId})`)
-          );
-        }).catch(() => {});
-      }
 
       let resolvedMicId: string | undefined = undefined;
 
@@ -413,7 +687,6 @@ export function useVoiceConnection({
       };
 
       // Configure microphone chunk dispatch
-      // Configure microphone chunk dispatch
       inProcessor.onaudioprocess = (e) => {
         if (ws.readyState !== WebSocket.OPEN) return;
         
@@ -444,9 +717,53 @@ export function useVoiceConnection({
           const msg = JSON.parse(event.data);
 
           switch (msg.type) {
-            case "connected":
-              console.log("[AudioEngine] Voice connection active");
-              setState("connected");
+            case "connected": {
+              console.log("[AudioEngine] Voice connection active from server");
+              if (connectingTimeoutRef.current) {
+                clearTimeout(connectingTimeoutRef.current);
+                connectingTimeoutRef.current = null;
+              }
+
+              if (typeof msg.remainingSeconds === "number") {
+                setRemainingSeconds(msg.remainingSeconds);
+                remainingSecondsRef.current = msg.remainingSeconds;
+              }
+              if (typeof msg.limitSeconds === "number") {
+                setLimitSeconds(msg.limitSeconds);
+              }
+
+              // Enforce MINIMUM ring time of about 1.6s so users hear at least one full ring
+              const elapsedRing = Date.now() - callStartTimeRef.current;
+              const remainingRing = Math.max(0, 1600 - elapsedRing);
+
+              if (minRingTimeoutRef.current) clearTimeout(minRingTimeoutRef.current);
+              minRingTimeoutRef.current = setTimeout(() => {
+                if (!hasHandledFailureRef.current) {
+                  wasEverActiveRef.current = true;
+                  lastAudioActivityRef.current = Date.now();
+                  setState("connected");
+                  updateCallPhase("active");
+                  stopRingback();
+                  playPickupBlip();
+                }
+              }, remainingRing);
+              break;
+            }
+
+            case "warning":
+              if (msg.warning === "1_MINUTE_REMAINING" && !hasWarned1MinRef.current) {
+                hasWarned1MinRef.current = true;
+                playWarningChime();
+                setIs1MinWarningActive(true);
+                setTimeout(() => setIs1MinWarningActive(false), 5000);
+              }
+              break;
+
+            case "limit_reached":
+              if (!hasHandledLimitRef.current) {
+                hasHandledLimitRef.current = true;
+                triggerGracefulLimitEnd();
+              }
               break;
 
             case "audio":
@@ -459,7 +776,6 @@ export function useVoiceConnection({
               console.log("[AudioEngine] Received interruption signal from Gemini");
               stopPlayback();
               setState("interrupted");
-              // Transition back to connected state after a split second
               setTimeout(() => {
                 setState((prev) => (prev === "interrupted" ? "connected" : prev));
               }, 400);
@@ -469,25 +785,20 @@ export function useVoiceConnection({
               if (msg.toolCall) {
                 const call = msg.toolCall as ToolCallPayload;
                 
-                // Trigger executing callback
                 if (onToolCallExecuting) {
                   onToolCallExecuting(call.name, call.args);
                 }
 
-                // Execute tool
                 const result = await ToolExecutor.execute(call);
 
-                // Trigger completed callback
                 if (onToolCallCompleted) {
                   onToolCallCompleted(call.name, result);
                 }
                 
-                // Trigger visual callbacks if provided
                 if (onToolCallExecuted) {
                   onToolCallExecuted(result.message);
                 }
 
-                // Reply to WebSocket server with result (include function name required by SDK)
                 if (ws.readyState === WebSocket.OPEN) {
                   ws.send(
                     JSON.stringify({
@@ -505,14 +816,22 @@ export function useVoiceConnection({
 
             case "disconnected":
               console.log("[AudioEngine] Server disconnected Gemini API session");
-              disconnect();
+              disconnect(false);
               break;
 
             case "error":
               console.error("[AudioEngine] Server error:", msg.message);
-              setState("error");
               if (onVoiceError) {
                 onVoiceError(msg.message);
+              }
+              if (!wasEverActiveRef.current) {
+                if (msg.message === "VOICE_LIMIT_REACHED") {
+                  failCall("limit");
+                } else {
+                  failCall("server");
+                }
+              } else {
+                disconnect(false);
               }
               break;
           }
@@ -523,15 +842,23 @@ export function useVoiceConnection({
 
       ws.onclose = () => {
         console.log("[AudioEngine] WebSocket connection closed");
-        disconnect();
+        if (!wasEverActiveRef.current && callPhaseRef.current === "ringing") {
+          failCall("server");
+        } else {
+          disconnect(false);
+        }
       };
 
       ws.onerror = (e) => {
         console.error("[AudioEngine] WebSocket experienced an error:", e);
-        setState("error");
+        if (!wasEverActiveRef.current && callPhaseRef.current === "ringing") {
+          failCall("server");
+        } else {
+          disconnect(false);
+        }
       };
 
-      // Poll volumes continuously for visualization (directly updating refs for high performance)
+      // Poll volumes continuously for visualization
       const pollVolume = () => {
         // Read Input volume
         if (inputAnalyserRef.current && !isMutedRef.current) {
@@ -560,12 +887,21 @@ export function useVoiceConnection({
           const average = sum / bufferLength / 255;
           volumesRef.current.speaker = average;
 
-          // Update state to speaking if active
           setState((prev) => (prev === "connected" || prev === "listening" ? "speaking" : prev));
         } else {
           volumesRef.current.speaker = 0;
-          // Transition speaking state back to connected if no audio is playing
           setState((prev) => (prev === "speaking" ? "connected" : prev));
+        }
+
+        // Track audio activity & silence detection (~60s of silence during active call)
+        const isActivity = volumesRef.current.mic > 0.02 || volumesRef.current.speaker > 0.02;
+        if (isActivity) {
+          lastAudioActivityRef.current = Date.now();
+        } else if (callPhaseRef.current === "active" && !isDisconnectingGracefullyRef.current) {
+          const silentMs = Date.now() - lastAudioActivityRef.current;
+          if (silentMs >= 60000 && !hasHandledSilenceRef.current && !hasHandledLimitRef.current) {
+            triggerGracefulSilenceEnd();
+          }
         }
 
         volumePollIdRef.current = requestAnimationFrame(pollVolume);
@@ -575,15 +911,42 @@ export function useVoiceConnection({
 
     } catch (err: any) {
       console.error("[AudioEngine] Failed to connect:", err);
-      setState("error");
-      disconnect();
+      const errMsg = (err.message || "").toLowerCase();
+      const errName = err.name || "";
+      const isMic =
+        errName === "NotAllowedError" ||
+        errName === "PermissionDeniedError" ||
+        errName === "NotFoundError" ||
+        errMsg.includes("permission") ||
+        errMsg.includes("not allowed") ||
+        errMsg.includes("microphone");
+
+      failCall(isMic ? "mic" : "server");
     }
-  }, [disconnect, playAudioChunk, stopPlayback, onToolCallExecuted]);
+  }, [
+    disconnect,
+    failCall,
+    internalDisconnect,
+    playAudioChunk,
+    requestWakeLock,
+    selectedMicId,
+    triggerGracefulLimitEnd,
+    triggerGracefulSilenceEnd,
+    updateCallPhase,
+    onToolCallCompleted,
+    onToolCallExecuted,
+    onToolCallExecuting,
+    onVoiceError
+  ]);
 
   // Clean up on component unmount
   useEffect(() => {
     return () => {
-      disconnect();
+      stopAllCallSounds();
+      if (connectingTimeoutRef.current) clearTimeout(connectingTimeoutRef.current);
+      if (minRingTimeoutRef.current) clearTimeout(minRingTimeoutRef.current);
+      if (endedPhaseTimerRef.current) clearTimeout(endedPhaseTimerRef.current);
+      disconnect(false);
     };
   }, [disconnect]);
 
@@ -593,8 +956,17 @@ export function useVoiceConnection({
 
   return {
     state,
+    callPhase,
+    failureReason,
+    isCallDropped,
     isMuted,
     volumesRef,
+    remainingSeconds,
+    limitSeconds,
+    is1MinWarningActive,
+    isSilenceHangup,
+    isQuotaHangup,
+    fetchVoiceQuota,
     connect,
     disconnect,
     toggleMute,

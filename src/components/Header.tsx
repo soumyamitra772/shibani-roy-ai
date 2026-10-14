@@ -9,7 +9,8 @@ import {
   Sparkles,
   ShieldCheck,
   ChevronDown,
-  Check
+  Check,
+  X
 } from "lucide-react";
 import { InteractionMode, AssistantState } from "../types";
 import { ThemeId, THEMES } from "../utils/themes";
@@ -81,6 +82,22 @@ export default function Header({
     };
   }, []);
 
+  // Close Looks panel on Escape key
+  useEffect(() => {
+    if (!showLooks) return;
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setShowLooks(false);
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [showLooks]);
+
   // Determine text status based on the current voice/websocket connection state
   const getStatusLabel = () => {
     switch (state) {
@@ -119,29 +136,23 @@ export default function Header({
         {/* ROW 1: Always one line, on mobile too */}
         <div className="flex items-center justify-between w-full gap-2 sm:gap-4">
           {/* Left: Brand & Badges */}
-          <div className="flex flex-col text-left shrink-0">
-            <div className="flex items-center gap-2 sm:gap-2.5">
-              <h1 className="text-xl sm:text-2xl font-bold font-sans tracking-tight bg-gradient-to-r from-white via-rose-100 to-pink-200 bg-clip-text text-transparent">
-                Shibani Roy
-              </h1>
-              {isPro ? (
-                <button
-                  onClick={onUpgradeClick}
-                  className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-gradient-to-r from-amber-500/20 to-yellow-500/20 border border-amber-500/40 text-amber-300 font-mono text-[9px] font-bold uppercase tracking-wider shadow-[0_0_10px_rgba(245,158,11,0.2)] hover:bg-amber-500/30 hover:scale-105 transition-all cursor-pointer"
-                  title="View Pro Subscription Details"
-                >
-                  ⭐ Pro
-                </button>
-              ) : (
-                <span className={`flex items-center gap-1 px-2 py-0.5 rounded border ${activeTheme.badgeClass} font-mono text-[9px] uppercase tracking-widest`}>
-                  AI Companion
-                </span>
-              )}
-            </div>
-            {/* Hidden below 640px, visible from sm breakpoint up */}
-            <p className="text-[11px] sm:text-xs text-gray-400 mt-0.5 hidden sm:block">
-              Created by <span className="font-medium text-gray-300 hover:text-rose-300 transition-colors">Soumya Mitra</span> (সৌম্য মিত্র)
-            </p>
+          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
+            <h1 className="text-xl sm:text-2xl font-bold font-sans tracking-tight bg-gradient-to-r from-white via-rose-100 to-pink-200 bg-clip-text text-transparent">
+              Shibani Roy
+            </h1>
+            {isPro ? (
+              <button
+                onClick={onUpgradeClick}
+                className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-gradient-to-r from-amber-500/20 to-yellow-500/20 border border-amber-500/40 text-amber-300 font-mono text-[9px] font-bold uppercase tracking-wider shadow-[0_0_10px_rgba(245,158,11,0.2)] hover:bg-amber-500/30 hover:scale-105 transition-all cursor-pointer"
+                title="View Pro Subscription Details"
+              >
+                ⭐ Pro
+              </button>
+            ) : (
+              <span className={`flex items-center gap-1 px-2 py-0.5 rounded border ${activeTheme.badgeClass} font-mono text-[9px] uppercase tracking-widest`}>
+                AI Companion
+              </span>
+            )}
           </div>
 
           {/* Right: Actions in strict order */}
@@ -414,26 +425,36 @@ export default function Header({
             transition={{ duration: 0.3 }}
             className={`w-full p-5 rounded-3xl border ${activeTheme.borderColor} ${activeTheme.cardBg} backdrop-blur-xl shadow-2xl overflow-hidden flex flex-col gap-4`}
           >
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-white/5 pb-3">
-              <div>
+            <div className="flex items-start sm:items-center justify-between gap-3 border-b border-white/5 pb-3">
+              <div className="min-w-0 pr-2">
                 <h3 className="text-sm font-semibold text-white flex items-center gap-2">
-                  <Camera className="w-4 h-4 text-rose-400" />
-                  Choose Shibani's Look
+                  <Camera className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>Choose Shibani's Look</span>
                 </h3>
                 <p className="text-xs text-gray-400 mt-0.5">
                   Select a specific avatar look or let her look rotate automatically every day.
                 </p>
               </div>
-              <button
-                onClick={() => onAvatarPreferenceChange("auto")}
-                className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all duration-300 cursor-pointer ${
-                  avatarPreference === "auto" || avatarPreference === ""
-                    ? "bg-gradient-to-r from-rose-500 to-pink-500 text-white border-transparent shadow-lg shadow-rose-500/20"
-                    : "border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white"
-                }`}
-              >
-                Auto-Rotate: {avatarPreference === "auto" || avatarPreference === "" ? "ON 🔄" : "OFF ⏸️"}
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => onAvatarPreferenceChange("auto")}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all duration-300 cursor-pointer whitespace-nowrap ${
+                    avatarPreference === "auto" || avatarPreference === ""
+                      ? "bg-gradient-to-r from-rose-500 to-pink-500 text-white border-transparent shadow-lg shadow-rose-500/20"
+                      : "border-white/10 bg-white/5 text-gray-400 hover:bg-white/10 hover:text-white"
+                  }`}
+                >
+                  Auto-Rotate: {avatarPreference === "auto" || avatarPreference === "" ? "ON 🔄" : "OFF ⏸️"}
+                </button>
+                <button
+                  onClick={() => setShowLooks(false)}
+                  aria-label="Close looks panel"
+                  title="Close"
+                  className="w-9 h-9 rounded-full flex items-center justify-center border border-white/10 bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white transition-all cursor-pointer shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-4 sm:grid-cols-8 gap-4 py-2">

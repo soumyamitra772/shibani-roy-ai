@@ -1007,12 +1007,104 @@ async function startServer() {
     }
   }
 
+  // Voice metering limits and helpers
+  const VOICE_LIMIT_FREE_MIN = Number(process.env.VOICE_LIMIT_FREE_MINUTES) || 5;
+  const VOICE_LIMIT_PRO_MIN = Number(process.env.VOICE_LIMIT_PRO_MINUTES) || 30;
+
   // Helper for daily usage limits
-  const inMemoryUsage = new Map<string, { images_generated: number; tool_calls: number; voice_minutes: number; chat_messages: number }>();
+  const inMemoryUsage = new Map<string, { images_generated: number; tool_calls: number; voice_minutes: number; voice_seconds?: number; chat_messages: number }>();
 
   function getKolkataDateString(): string {
     const now = new Date();
     return now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  }
+
+  async function getVoiceUsedSeconds(userId: string, date: string): Promise<number> {
+    const key = `${userId}:${date}`;
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from("user_usage")
+          .select("voice_seconds, voice_minutes")
+          .eq("user_id", userId)
+          .eq("date", date)
+          .maybeSingle();
+
+        if (!error && data) {
+          if (data.voice_seconds !== null && data.voice_seconds !== undefined) {
+            return Number(data.voice_seconds) || 0;
+          }
+          if (data.voice_minutes !== null && data.voice_minutes !== undefined) {
+            return (Number(data.voice_minutes) || 0) * 60;
+          }
+        }
+      } catch (err) {
+        console.warn("[Voice] Error reading voice_seconds from Supabase:", err);
+      }
+    }
+
+    if (inMemoryUsage.has(key)) {
+      const mem = inMemoryUsage.get(key)!;
+      if (mem.voice_seconds !== undefined) return mem.voice_seconds;
+      return (mem.voice_minutes || 0) * 60;
+    }
+    return 0;
+  }
+
+  async function recordVoiceSeconds(userId: string, date: string, seconds: number): Promise<void> {
+    if (seconds <= 0) return;
+    const key = `${userId}:${date}`;
+    try {
+      const prevSeconds = await getVoiceUsedSeconds(userId, date);
+      const newVoiceSeconds = prevSeconds + seconds;
+      const newVoiceMinutes = Math.ceil(newVoiceSeconds / 60);
+
+      const mem = inMemoryUsage.get(key) || {
+        images_generated: 0,
+        tool_calls: 0,
+        voice_minutes: 0,
+        voice_seconds: 0,
+        chat_messages: 0,
+      };
+      mem.voice_seconds = newVoiceSeconds;
+      mem.voice_minutes = newVoiceMinutes;
+      inMemoryUsage.set(key, mem);
+
+      if (supabase) {
+        const { error } = await supabase
+          .from("user_usage")
+          .upsert(
+            {
+              user_id: userId,
+              date: date,
+              voice_seconds: newVoiceSeconds,
+              voice_minutes: newVoiceMinutes,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "user_id,date" }
+          );
+
+        if (error) {
+          console.warn("[Voice] Error upserting voice_seconds to Supabase:", error.message || error);
+          if (error.message?.includes("voice_seconds") || (error as any).code === "42703") {
+            await supabase
+              .from("user_usage")
+              .upsert(
+                {
+                  user_id: userId,
+                  date: date,
+                  voice_minutes: newVoiceMinutes,
+                  updated_at: new Date().toISOString(),
+                },
+                { onConflict: "user_id,date" }
+              );
+          }
+        }
+      }
+      console.log(`[Voice] Recorded ${seconds}s for user ${userId}. Total today: ${newVoiceSeconds}s (${newVoiceMinutes}m)`);
+    } catch (err) {
+      console.error("[Voice] Exception recording voice seconds:", err);
+    }
   }
 
   const UNLIMITED_PRO_TOOLS = new Set([
@@ -2723,6 +2815,26 @@ async function startServer() {
     return res.json({ isPro: pro, userId });
   });
 
+  app.get("/api/voice-quota", requireAuth, async (req, res) => {
+    try {
+      const userId = (req as any).userId;
+      const today = getKolkataDateString();
+      const userIsProOrAdmin = isAdmin(userId) || (await isPro(userId));
+      const limitMinutes = userIsProOrAdmin ? VOICE_LIMIT_PRO_MIN : VOICE_LIMIT_FREE_MIN;
+      const limitSeconds = limitMinutes * 60;
+      const usedSeconds = await getVoiceUsedSeconds(userId, today);
+      const remainingSeconds = Math.max(0, limitSeconds - usedSeconds);
+      return res.json({
+        usedSeconds,
+        limitSeconds,
+        remainingSeconds,
+        isProOrAdmin: userIsProOrAdmin,
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get("/api/user-status", requireAuth, async (req, res) => {
     const userId = (req as any).userId;
     const pro = await isPro(userId);
@@ -2742,6 +2854,7 @@ async function startServer() {
     let isAuthenticated = false;
     let userId = "anonymous-user";
     let voiceSessionStart = 0;
+    let sessionRecorded = false;
     let voiceCheckInterval: any = null;
 
     const authTimeout = setTimeout(() => {
@@ -2779,29 +2892,15 @@ async function startServer() {
 
             isAuthenticated = true;
 
-            // Check voice minute quota before connecting
+            // Check second-based voice quota before connecting
             const voiceToday = getKolkataDateString();
-            const VOICE_LIMIT_FREE = 5;
-            const VOICE_LIMIT_PRO = 30;
+            const userIsProOrAdmin = isAdmin(userId) || (await isPro(userId));
+            const limitMinutes = userIsProOrAdmin ? VOICE_LIMIT_PRO_MIN : VOICE_LIMIT_FREE_MIN;
+            const limitSeconds = limitMinutes * 60;
+            const usedSeconds = await getVoiceUsedSeconds(userId, voiceToday);
+            const remainingSeconds = Math.max(0, limitSeconds - usedSeconds);
 
-            // Read current voice usage
-            let currentVoiceMinutes = 0;
-            if (supabase) {
-              try {
-                const { data: voiceData } = await supabase
-                  .from("user_usage")
-                  .select("voice_minutes")
-                  .eq("user_id", userId)
-                  .eq("date", voiceToday)
-                  .maybeSingle();
-                if (voiceData) currentVoiceMinutes = Number(voiceData.voice_minutes) || 0;
-              } catch (e) { /* ignore */ }
-            }
-
-            const userIsProOrAdmin = isAdmin(userId) || await isPro(userId);
-            const voiceLimit = userIsProOrAdmin ? VOICE_LIMIT_PRO : VOICE_LIMIT_FREE;
-
-            if (currentVoiceMinutes >= voiceLimit) {
+            if (remainingSeconds < 10) {
               clientWs.send(JSON.stringify({ type: "error", message: "VOICE_LIMIT_REACHED" }));
               clientWs.close();
               return;
@@ -2809,34 +2908,37 @@ async function startServer() {
 
             // Track session start time so we can record duration on disconnect
             voiceSessionStart = Date.now();
+            let sent1MinWarning = false;
 
             if (voiceCheckInterval) clearInterval(voiceCheckInterval);
             voiceCheckInterval = setInterval(async () => {
-              let recordedVoiceMinutes = 0;
-              if (supabase) {
-                try {
-                  const { data: voiceData } = await supabase
-                    .from("user_usage")
-                    .select("voice_minutes")
-                    .eq("user_id", userId)
-                    .eq("date", voiceToday)
-                    .maybeSingle();
-                  if (voiceData) recordedVoiceMinutes = Number(voiceData.voice_minutes) || 0;
-                } catch (e) { /* ignore */ }
+              const currentElapsedSeconds = Math.floor((Date.now() - voiceSessionStart) / 1000);
+              const currentRemaining = limitSeconds - (usedSeconds + currentElapsedSeconds);
+
+              // 1-minute warning signal to client
+              if (currentRemaining <= 60 && currentRemaining > 50 && !sent1MinWarning) {
+                sent1MinWarning = true;
+                clientWs.send(JSON.stringify({
+                  type: "warning",
+                  warning: "1_MINUTE_REMAINING",
+                  remainingSeconds: Math.max(0, currentRemaining)
+                }));
               }
-              const currentElapsed = Math.round((Date.now() - voiceSessionStart) / 60000);
-              const totalMinutesUsed = recordedVoiceMinutes + currentElapsed;
-              if (totalMinutesUsed > voiceLimit) {
-                if (voiceCheckInterval) clearInterval(voiceCheckInterval);
-                clientWs.send(JSON.stringify({ type: "error", message: "VOICE_LIMIT_REACHED" }));
-                if (session) {
-                  try {
-                    session.close();
-                  } catch (e) { /* ignore */ }
+
+              if (currentRemaining <= 0) {
+                if (voiceCheckInterval) {
+                  clearInterval(voiceCheckInterval);
+                  voiceCheckInterval = null;
                 }
-                clientWs.close();
+                clientWs.send(JSON.stringify({ type: "limit_reached", message: "VOICE_LIMIT_REACHED" }));
+                setTimeout(() => {
+                  if (session) {
+                    try { session.close(); } catch (e) {}
+                  }
+                  clientWs.close();
+                }, 4000);
               }
-            }, 60000);
+            }, 5000);
 
             try {
               const wsMemories = userIsProOrAdmin ? await recallFactsFromDb(userId) : [];
@@ -2903,7 +3005,11 @@ async function startServer() {
               });
 
               console.log("Gemini Live API connected and proxying");
-              clientWs.send(JSON.stringify({ type: "connected" }));
+              clientWs.send(JSON.stringify({
+                type: "connected",
+                remainingSeconds,
+                limitSeconds
+              }));
             } catch (error: any) {
               console.error("Failed to connect to Gemini Live:", error);
               Sentry.captureException(error, { tags: { feature: "voice" } });
@@ -2958,31 +3064,13 @@ async function startServer() {
         }
       }
 
-      // Record voice minutes used in this session
-      if (voiceSessionStart > 0) {
-        const voiceMinutesUsed = Math.round((Date.now() - voiceSessionStart) / 60000);
-        if (voiceMinutesUsed > 0 && supabase) {
-          try {
-            const voiceDate = getKolkataDateString();
-            const { data: existing } = await supabase
-              .from("user_usage")
-              .select("voice_minutes")
-              .eq("user_id", userId)
-              .eq("date", voiceDate)
-              .maybeSingle();
-            const prevMinutes = existing ? Number(existing.voice_minutes) || 0 : 0;
-            await supabase.from("user_usage").upsert(
-              {
-                user_id: userId,
-                date: voiceDate,
-                voice_minutes: prevMinutes + voiceMinutesUsed,
-                updated_at: new Date().toISOString(),
-              },
-              { onConflict: "user_id,date" }
-            );
-          } catch (e) {
-            console.warn("[Voice] Failed to record voice minutes:", e);
-          }
+      // Record voice seconds used in this session exactly once
+      if (!sessionRecorded && voiceSessionStart > 0) {
+        sessionRecorded = true;
+        const elapsedSeconds = Math.floor((Date.now() - voiceSessionStart) / 1000);
+        if (elapsedSeconds > 0) {
+          const voiceDate = getKolkataDateString();
+          await recordVoiceSeconds(userId, voiceDate, elapsedSeconds);
         }
       }
     });

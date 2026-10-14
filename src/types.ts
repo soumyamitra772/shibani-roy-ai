@@ -37,10 +37,13 @@ export interface ToolCallPayload {
 }
 
 export interface WebSocketEvent {
-  type: "connected" | "disconnected" | "audio" | "interrupted" | "toolCall" | "error";
+  type: "connected" | "disconnected" | "audio" | "interrupted" | "toolCall" | "error" | "warning" | "limit_reached";
   data?: string;
   message?: string;
+  warning?: string;
   toolCall?: ToolCallPayload;
+  remainingSeconds?: number;
+  limitSeconds?: number;
 }
 
 export interface Track {
