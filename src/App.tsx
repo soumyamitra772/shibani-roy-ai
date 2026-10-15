@@ -20,6 +20,7 @@ import AdminPanel from "./components/AdminPanel";
 import { supabase } from "./utils/supabaseClient";
 import { getActiveAvatar, getAvatarPreference, saveAvatarPreference } from "./utils/avatarUtils";
 import { stopAllCallSounds } from "./utils/callSounds";
+import { MoodId, MOODS, getMoodById } from "./utils/moods";
 
 interface UpgradeModalProps {
   session: any;
@@ -334,6 +335,78 @@ export default function App() {
   const [isPro, setIsPro] = useState<boolean>(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [showAdmin, setShowAdmin] = useState(false);
+
+  // Role-play mood state with localStorage persistence
+  const [selectedMood, setSelectedMood] = useState<MoodId>(() => {
+    try {
+      const saved = localStorage.getItem("shibani_mood");
+      if (saved && MOODS.some((m) => m.id === saved)) {
+        return saved as MoodId;
+      }
+    } catch (e) {}
+    return "normal";
+  });
+  const [showAdultConfirm, setShowAdultConfirm] = useState(false);
+  const [pendingMood, setPendingMood] = useState<MoodId | null>(null);
+
+  // Fallback to normal if saved mood is pro-only and user has no pro access
+  useEffect(() => {
+    const userHasProAccess = isPro || isAdmin;
+    const moodConfig = getMoodById(selectedMood);
+    if (moodConfig.tier === "pro" && !userHasProAccess) {
+      setSelectedMood("normal");
+      try {
+        localStorage.setItem("shibani_mood", "normal");
+      } catch (e) {}
+    }
+  }, [isPro, isAdmin, selectedMood]);
+
+  const handleSelectMood = (moodId: MoodId) => {
+    const moodConfig = getMoodById(moodId);
+    const userHasProAccess = isPro || isAdmin;
+
+    if (moodConfig.tier === "pro" && !userHasProAccess) {
+      setShowUpgradeModal(true);
+      return;
+    }
+
+    if (moodId === "wife" || moodId === "girlfriend") {
+      let adultOk = false;
+      try {
+        adultOk = localStorage.getItem("shibani_adult_ok") === "1";
+      } catch (e) {}
+
+      if (!adultOk) {
+        setPendingMood(moodId);
+        setShowAdultConfirm(true);
+        return;
+      }
+    }
+
+    setSelectedMood(moodId);
+    try {
+      localStorage.setItem("shibani_mood", moodId);
+    } catch (e) {}
+  };
+
+  const handleConfirmAdult = () => {
+    try {
+      localStorage.setItem("shibani_adult_ok", "1");
+    } catch (e) {}
+    if (pendingMood) {
+      setSelectedMood(pendingMood);
+      try {
+        localStorage.setItem("shibani_mood", pendingMood);
+      } catch (e) {}
+    }
+    setShowAdultConfirm(false);
+    setPendingMood(null);
+  };
+
+  const handleCancelAdult = () => {
+    setShowAdultConfirm(false);
+    setPendingMood(null);
+  };
 
   const fetchUserStatus = async () => {
     try {
@@ -655,6 +728,16 @@ export default function App() {
     stopPlayback,
   } = useVoiceConnection({
     selectedMicId,
+    selectedMood,
+    onMoodApplied: (applied, denied) => {
+      if (denied) {
+        setSelectedMood("normal");
+        try {
+          localStorage.setItem("shibani_mood", "normal");
+        } catch (e) {}
+        triggerNotification("That mood is for Pro, calling as Normal instead.", "info");
+      }
+    },
     onVoiceError: (errorMsg) => {
       const isLocked =
         errorMsg === "TOOL_LOCKED" ||
@@ -1191,6 +1274,10 @@ export default function App() {
                         is1MinWarningActive={is1MinWarningActive}
                         isSilenceHangup={isSilenceHangup}
                         isQuotaHangup={isQuotaHangup}
+                        isPro={isPro || isAdmin}
+                        selectedMood={selectedMood}
+                        onSelectMood={handleSelectMood}
+                        onUpgrade={() => setShowUpgradeModal(true)}
                       />
                     </div>
 
@@ -1325,6 +1412,48 @@ export default function App() {
             }}
             onError={(msg) => triggerNotification(msg, "error")}
           />
+        )}
+
+        {showAdultConfirm && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-neutral-900 border border-white/10 rounded-2xl p-6 max-w-sm w-full shadow-2xl text-center space-y-4"
+            >
+              <div className="w-12 h-12 rounded-full bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center mx-auto text-xl">
+                🔞
+              </div>
+              <div className="space-y-1.5">
+                <h3 className="text-base font-semibold text-white">Age Confirmation</h3>
+                <p className="text-xs text-neutral-300 leading-relaxed">
+                  Shibani is an AI character. This mode is friendly role-play for entertainment, for adults only. Are you 18 or older?
+                </p>
+              </div>
+              <div className="flex gap-3 justify-center pt-2">
+                <button
+                  type="button"
+                  onClick={handleCancelAdult}
+                  className="flex-1 px-4 py-2.5 rounded-xl text-xs font-medium text-neutral-400 bg-white/5 hover:bg-white/10 border border-white/10 transition-colors cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmAdult}
+                  className="flex-1 px-4 py-2.5 rounded-xl text-xs font-medium text-white bg-gradient-to-r from-rose-500 to-pink-500 hover:brightness-110 shadow-lg shadow-rose-500/20 transition-all cursor-pointer"
+                >
+                  I'm 18+
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
         )}
       </AnimatePresence>
 

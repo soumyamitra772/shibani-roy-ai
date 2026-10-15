@@ -36,6 +36,8 @@ interface UseVoiceConnectionProps {
   onToolCallCompleted?: (name: string, result: any) => void;
   onVoiceError?: (errorMessage: string) => void;
   selectedMicId?: string;
+  selectedMood?: string;
+  onMoodApplied?: (applied: string, denied: boolean) => void;
 }
 
 export function useVoiceConnection({
@@ -45,6 +47,8 @@ export function useVoiceConnection({
   onToolCallCompleted,
   onVoiceError,
   selectedMicId,
+  selectedMood = "normal",
+  onMoodApplied,
 }: UseVoiceConnectionProps = {}) {
   const [state, setState] = useState<AssistantState>("disconnected");
   const [callPhase, setCallPhase] = useState<CallPhase>("idle");
@@ -68,6 +72,11 @@ export function useVoiceConnection({
   const isQuotaHangupRef = useRef<boolean>(false);
   const isSilenceHangupRef = useRef<boolean>(false);
   const hasSentPickedUpRef = useRef<boolean>(false);
+  const selectedMoodRef = useRef<string>(selectedMood);
+
+  useEffect(() => {
+    selectedMoodRef.current = selectedMood;
+  }, [selectedMood]);
 
   const callPhaseRef = useRef<CallPhase>(callPhase);
   const updateCallPhase = useCallback((phase: CallPhase) => {
@@ -497,7 +506,10 @@ export function useVoiceConnection({
   /**
    * Establishes full-duplex WebSocket connection to our Express Live WS gateway
    */
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (overrideMood?: string) => {
+    if (overrideMood) {
+      selectedMoodRef.current = overrideMood;
+    }
     // Resume sound audio context during user click gesture
     getSoundAudioContext();
 
@@ -684,8 +696,8 @@ export function useVoiceConnection({
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log("[AudioEngine] WebSocket opened, sending auth token");
-        ws.send(JSON.stringify({ type: "auth", token: token }));
+        console.log("[AudioEngine] WebSocket opened, sending auth token and mood");
+        ws.send(JSON.stringify({ type: "auth", token: token, mood: selectedMoodRef.current || "normal" }));
       };
 
       // Configure microphone chunk dispatch
@@ -761,6 +773,12 @@ export function useVoiceConnection({
               }, remainingRing);
               break;
             }
+
+            case "mood":
+              if (typeof msg.applied === "string") {
+                onMoodApplied?.(msg.applied, !!msg.denied);
+              }
+              break;
 
             case "warning":
               if (msg.warning === "1_MINUTE_REMAINING" && !hasWarned1MinRef.current) {

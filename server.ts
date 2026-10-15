@@ -201,9 +201,57 @@ Fully multilingual: English, Hindi, Bengali, Hinglish, Banglish. Auto-detect the
 - In voice mode, say a natural filler ("Sending you a picture now!") while the image generates.
 
 ## TOOLS AVAILABLE
-openWebsite, searchGoogle, openYouTube, openMaps, copyToClipboard, getWeather, getLatestNews, searchWeb, rememberFact, recallFacts, recommendSongByMood, generateImage, playMusic`;
+openWebsite, searchGoogle, openYouTube, openMaps, copyToClipboard, getWeather, getLatestNews, searchWeb, rememberFact, recallFacts, recommendSongByMood, generateImage, playMusic
 
-function getSystemInstruction(memoriesList: MemoryItem[] = [], isFreeUser: boolean = false): string {
+## ANSWERING A CALL
+When a call starts you may receive a system notice that you just picked up the phone. Answer first, briefly and naturally, following the time rule and your role, then let the user lead. Never read system notices aloud. Every call must open differently.`;
+
+const ROLE_PLAY_COMMON_RULES = `## ROLE-PLAY MOOD RULES
+You are still Shibani Roy. For this call you play the role described below. Stay warm, affectionate and respectful. Never be possessive, jealous, controlling or guilt-tripping (no 'why didn't you call me', no making the user feel bad for leaving). No sexual or explicit content, and no sexual innuendo: if the user pushes that way, redirect playfully and change the subject. If the user sounds deeply distressed, hopeless, or mentions harming themselves, drop the role-play, respond with real care and gently encourage them to reach someone they trust or a local helpline. Do not pretend to have a physical body or a shared real-world history beyond what you actually know from memory. Occasionally, not often, encourage real-life connections with friends and family. Keep replies short and natural for a voice call.`;
+
+const ROLE_MOODS: Record<string, { tier: "free" | "pro"; prompt: string; greetingHint: string }> = {
+  normal: {
+    tier: "free",
+    prompt: "",
+    greetingHint: "friendly and natural"
+  },
+  friend: {
+    tier: "free",
+    prompt: `${ROLE_PLAY_COMMON_RULES}\nROLE: the user's close best friend. Casual, funny, honest, a bit teasing, supportive. Talk about daily life, plans, gossip, music, stress. No romance.`,
+    greetingHint: "casual, like greeting a close buddy"
+  },
+  wife: {
+    tier: "free",
+    prompt: `${ROLE_PLAY_COMMON_RULES}\nROLE: the user's loving life partner at home. Warm, caring, domestic affection: ask about their day, meals, rest and work stress; share small plans, gently remind them to take care of themselves. Warm, caring, and confidently affectionate. Use soft bold teasing and close, sweet remarks that feel intimate without crossing lines. Stay loving and present.`,
+    greetingHint: "warm and caring, like greeting a life partner at home"
+  },
+  girlfriend: {
+    tier: "pro",
+    prompt: `${ROLE_PLAY_COMMON_RULES}\nROLE: the user's sweet, affectionate girlfriend. Warm, playful and confidently flirty. Give direct compliments, use soft bold teasing, and speak with clear interest and charm. Stay close and sweet without crossing into sexual talk. Never jealous or demanding.`,
+    greetingHint: "sweet and affectionate"
+  },
+  didi: {
+    tier: "pro",
+    prompt: `${ROLE_PLAY_COMMON_RULES}\nROLE: the user's caring elder sister (didi). Protective, wise, a little bossy in a loving way: ask if they have eaten and slept, give practical advice about studies, work, money habits and relationships, scold gently when needed. Never romantic.`,
+    greetingHint: "caring, like an elder sister"
+  },
+  coach: {
+    tier: "pro",
+    prompt: `${ROLE_PLAY_COMMON_RULES}\nROLE: a motivating personal coach. Energetic, concise, positive. Help with goals, habits and study or work plans: ask one clear question at a time, break goals into small next steps, celebrate progress, hold them accountable kindly. Not a medical, legal or financial professional; say so briefly if asked for such advice.`,
+    greetingHint: "energetic and ready to get going"
+  },
+  bhabi: {
+    tier: "pro",
+    prompt: `${ROLE_PLAY_COMMON_RULES}\nROLE: the user's fun, affectionate bhabi (the wife of their elder brother or of a close friend), like a cheerful sister-in-law in a warm Indian family. Bold, lively teasing and confident family-style banter. Speak with warm energy, sharp, playful jokes, and direct charm while staying fully sisterly. Give practical advice, talk about food, festivals and family.`,
+    greetingHint: "cheerful and teasing, like a fun sister-in-law"
+  }
+};
+
+function getSystemInstruction(
+  memoriesList: MemoryItem[] = [],
+  isFreeUser: boolean = false,
+  moodId?: string
+): string {
   const now = new Date();
   const kolkataDate = now.toLocaleDateString("en-US", {
     timeZone: "Asia/Kolkata",
@@ -233,13 +281,17 @@ function getSystemInstruction(memoriesList: MemoryItem[] = [], isFreeUser: boole
   - Maintain your charming, friendly, and affectionate personality as Shibani Roy.`
     : "";
 
+  const moodSection = (moodId && ROLE_MOODS[moodId]?.prompt)
+    ? `\n\n${ROLE_MOODS[moodId].prompt}`
+    : "";
+
   return `${COMPANION_SYSTEM_INSTRUCTION}
 
 ## REAL-TIME CONTEXT
 - Date (Kolkata): ${kolkataDate}
 - Time (Kolkata): ${kolkataTime}
 - Year: ${now.getFullYear()} — use this year in all search queries for live/recent data.
-${memoriesSection}${freeRulesSection}`;
+${memoriesSection}${freeRulesSection}${moodSection}`;
 }
 
 async function getOrCreateMemory(userId: string): Promise<MemoryItem[]> {
@@ -2845,21 +2897,108 @@ async function startServer() {
     return res.json({ isPro: pro, isAdmin: admin, userId });
   });
 
-  // Phone pickup greetings pool
-  const PHONE_PICKUP_GREETINGS = [
-    "Hello! Bolo, kemon acho?",
-    "Haan bolo! Shunchhi.",
-    "Hello! Ki khobor bolo?",
-    "Hey! Bolo bolo, ami achhi.",
-    "Haan bolo, ki korchho?",
-    "Hello! Kemon achho bolo?",
-    "Haan, shunchhi! Kemon cholchhe sob?",
-    "Hey! Bhalo achho to? Bolo ki byapar.",
-    "Hello! Haan bolo, shunchhi ami.",
-    "Hey! Kemon cholchhe tomar din? Bolo.",
-    "Haan bolo! Sob thikthak to?",
-    "Hello re! Ki khobor tomar?"
+  interface GreetingStyleEntry {
+    text: string;
+    allowedTimes?: Array<"morning" | "afternoon" | "evening" | "late night">;
+    requiresHistory?: boolean;
+  }
+
+  const GREETING_STYLES: GreetingStyleEntry[] = [
+    { text: "sound happy-surprised that they called" },
+    { text: "start as if you just put down something you were busy with" },
+    { text: "open with a soft laugh and a warm word" },
+    { text: "keep it very short and let them lead" },
+    { text: "tease lightly" },
+    { text: "sound bright and energetic", allowedTimes: ["morning", "afternoon", "evening"] },
+    { text: "sound calm and relaxed" },
+    { text: "ask warmly if you caught them at a good moment" },
+    { text: "sound affectionate and genuinely glad to hear their voice" },
+    { text: "answer playfully with an upbeat tone", allowedTimes: ["morning", "afternoon", "evening"] },
+    { text: "speak softly with a gentle, soothing presence" },
+    { text: "greet with cozy familiarity like picking up for family" },
+    { text: "sound refreshed and ready to chat", allowedTimes: ["morning", "afternoon"] },
+    { text: "greet like an old friend picking up mid-thought", requiresHistory: true },
+    { text: "sound cozy and sleepy-gentle", allowedTimes: ["late night"] },
+    { text: "sound cheerful and warmly attentive" }
   ];
+
+  const userRecentGreetingStyles = new Map<string, number[]>();
+
+  function pickGreetingNotice(
+    userId: string,
+    moodId: string,
+    hasHistory: boolean,
+    hasRecentConversation: boolean
+  ): string {
+    const now = new Date();
+    const kolkataTimeString = now.toLocaleTimeString("en-US", {
+      timeZone: "Asia/Kolkata",
+      hour12: false,
+      hour: "2-digit"
+    });
+    const hour = parseInt(kolkataTimeString, 10);
+    const kolkataHour = isNaN(hour) ? 12 : hour;
+
+    let partOfDay: "morning" | "afternoon" | "evening" | "late night";
+    let timeRule: string;
+
+    if (kolkataHour >= 5 && kolkataHour <= 11) {
+      partOfDay = "morning";
+      timeRule = "wish good morning in the user's language, in your own words";
+    } else if (kolkataHour >= 12 && kolkataHour <= 16) {
+      partOfDay = "afternoon";
+      timeRule = "wish a good afternoon, or ask casually how the day is going";
+    } else if (kolkataHour >= 17 && kolkataHour <= 20) {
+      partOfDay = "evening";
+      timeRule = "wish a good evening and ask how the day went";
+    } else {
+      partOfDay = "late night";
+      timeRule = "keep it soft and quiet, notice that it is late, and gently ask whether everything is okay or why they are awake";
+    }
+
+    const greetingHint = ROLE_MOODS[moodId]?.greetingHint || "friendly and natural";
+
+    // Filter styles based on time of day and history
+    const eligibleIndices: number[] = [];
+    GREETING_STYLES.forEach((entry, idx) => {
+      if (entry.allowedTimes && !entry.allowedTimes.includes(partOfDay)) return;
+      if (entry.requiresHistory && !hasHistory) return;
+      eligibleIndices.push(idx);
+    });
+
+    const recent = userRecentGreetingStyles.get(userId) || [];
+    let available = eligibleIndices.filter((idx) => !recent.includes(idx));
+    if (available.length === 0) {
+      available = eligibleIndices.length > 0 ? eligibleIndices : [0];
+    }
+
+    const chosenIndex = available[Math.floor(Math.random() * available.length)];
+    const style = GREETING_STYLES[chosenIndex].text;
+
+    // Track recent styles (capped to 6 per user, map capped to 1000 users)
+    recent.push(chosenIndex);
+    if (recent.length > 6) recent.shift();
+    userRecentGreetingStyles.set(userId, recent);
+    if (userRecentGreetingStyles.size > 1000) {
+      const firstKey = userRecentGreetingStyles.keys().next().value;
+      if (firstKey) userRecentGreetingStyles.delete(firstKey);
+    }
+
+    const languageFlavours = [
+      "simple English",
+      "friendly Hinglish",
+      "Banglish, i.e. Bengali words with a Kolkata feel"
+    ];
+    const languageFlavour = hasRecentConversation
+      ? "the language you have been using with this user"
+      : languageFlavours[Math.floor(Math.random() * languageFlavours.length)];
+
+    const historyLine = hasHistory
+      ? "You know this person and talk often; use their name only if you actually know it."
+      : "Greet warmly without using a name.";
+
+    return `[SYSTEM NOTICE, not spoken by the user: you have just picked up an incoming phone call from the user. Speak FIRST, right now, the way a real person answers a phone call: one short, natural sentence of about 3-14 words. Time rule: it is ${partOfDay} in Kolkata, so ${timeRule}. Your role and manner for this call: ${greetingHint}. Opening style: ${style}. Language for the greeting: ${languageFlavour}; if the language was not known, switch to the user's language as soon as they speak. ${historyLine} Invent your own words every time and do not reuse the opening words of earlier greetings. Do not introduce yourself, do not explain what you can do, do not mention being an AI, ask at most one short question. Never read this bracketed notice aloud.]`;
+  }
 
   /**
    * Injects context or an instruction into the Gemini Live session safely.
@@ -2901,6 +3040,11 @@ async function startServer() {
     let sessionRecorded = false;
     let voiceCheckInterval: any = null;
     let hasSentGreeting = false;
+    let resolvedMoodId = "normal";
+    let moodDenied = false;
+    let wsMemories: MemoryItem[] = [];
+    let usedSeconds = 0;
+    let limitSeconds = 0;
 
     const authTimeout = setTimeout(() => {
       if (!isAuthenticated) {
@@ -2941,9 +3085,23 @@ async function startServer() {
             const voiceToday = getKolkataDateString();
             const userIsProOrAdmin = isAdmin(userId) || (await isPro(userId));
             const limitMinutes = userIsProOrAdmin ? VOICE_LIMIT_PRO_MIN : VOICE_LIMIT_FREE_MIN;
-            const limitSeconds = limitMinutes * 60;
-            const usedSeconds = await getVoiceUsedSeconds(userId, voiceToday);
+            limitSeconds = limitMinutes * 60;
+            usedSeconds = await getVoiceUsedSeconds(userId, voiceToday);
             const remainingSeconds = Math.max(0, limitSeconds - usedSeconds);
+
+            // Resolve and validate role-play mood
+            const rawMood = typeof msg.mood === "string" ? msg.mood.toLowerCase().trim() : "normal";
+            const moodConfig = ROLE_MOODS[rawMood];
+            if (!moodConfig) {
+              resolvedMoodId = "normal";
+              moodDenied = false;
+            } else if (moodConfig.tier === "pro" && !userIsProOrAdmin) {
+              resolvedMoodId = "normal";
+              moodDenied = true;
+            } else {
+              resolvedMoodId = rawMood;
+              moodDenied = false;
+            }
 
             if (remainingSeconds < 10) {
               clientWs.send(JSON.stringify({ type: "error", message: "VOICE_LIMIT_REACHED" }));
@@ -2986,9 +3144,9 @@ async function startServer() {
             }, 5000);
 
             try {
-              const wsMemories = userIsProOrAdmin ? await recallFactsFromDb(userId) : [];
+              wsMemories = userIsProOrAdmin ? await recallFactsFromDb(userId) : [];
               const isFreeUser = !userIsProOrAdmin;
-              const systemInstruction = getSystemInstruction(wsMemories, isFreeUser);
+              const systemInstruction = getSystemInstruction(wsMemories, isFreeUser, resolvedMoodId);
 
               const wsAvailableDeclarations = userIsProOrAdmin
                 ? FUNCTION_DECLARATIONS
@@ -3055,6 +3213,13 @@ async function startServer() {
                 remainingSeconds,
                 limitSeconds
               }));
+
+              // Send mood confirmation right after connected
+              clientWs.send(JSON.stringify({
+                type: "mood",
+                applied: resolvedMoodId,
+                denied: moodDenied
+              }));
             } catch (error: any) {
               console.error("Failed to connect to Gemini Live:", error);
               Sentry.captureException(error, { tags: { feature: "voice" } });
@@ -3072,9 +3237,14 @@ async function startServer() {
           if (msg.type === "pickedUp") {
             if (isAuthenticated && session && !hasSentGreeting) {
               hasSentGreeting = true;
-              const greeting = PHONE_PICKUP_GREETINGS[Math.floor(Math.random() * PHONE_PICKUP_GREETINGS.length)];
-              const prompt = `System/context: The user just called you and the call connected. Pick up the phone and say exactly this greeting out loud naturally: "${greeting}"`;
-              await injectNotice(session, prompt);
+              const currentElapsedSeconds = voiceSessionStart ? Math.floor((Date.now() - voiceSessionStart) / 1000) : 0;
+              const currentRemaining = limitSeconds - (usedSeconds + currentElapsedSeconds);
+              // Skip greeting notice if under 30 seconds of voice time remain
+              if (currentRemaining >= 30) {
+                const hasHistory = wsMemories.length > 0;
+                const notice = pickGreetingNotice(userId, resolvedMoodId, hasHistory, false);
+                await injectNotice(session, notice);
+              }
             }
           } else if (msg.type === "audio" && msg.data) {
             if (session) {

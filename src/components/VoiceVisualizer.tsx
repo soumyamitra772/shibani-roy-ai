@@ -5,10 +5,11 @@
 
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Mic, MicOff, Phone, PhoneOff, Camera, Sparkles } from "lucide-react";
+import { Mic, MicOff, Phone, PhoneOff, Camera, Sparkles, Lock } from "lucide-react";
 import { AssistantState } from "../types";
 import { ThemeId, THEMES } from "../utils/themes";
 import { CallPhase, FailureReason } from "../hooks/useVoiceConnection";
+import { MOODS, MoodId, getMoodById } from "../utils/moods";
 
 interface VoiceVisualizerProps {
   state: AssistantState;
@@ -29,6 +30,10 @@ interface VoiceVisualizerProps {
   is1MinWarningActive?: boolean;
   isSilenceHangup?: boolean;
   isQuotaHangup?: boolean;
+  isPro?: boolean;
+  selectedMood?: MoodId;
+  onSelectMood?: (moodId: MoodId) => void;
+  onUpgrade?: () => void;
 }
 
 export default function VoiceVisualizer({
@@ -50,6 +55,10 @@ export default function VoiceVisualizer({
   is1MinWarningActive = false,
   isSilenceHangup = false,
   isQuotaHangup = false,
+  isPro = false,
+  selectedMood = "normal",
+  onSelectMood,
+  onUpgrade,
 }: VoiceVisualizerProps) {
   const [bars, setBars] = useState<number[]>(Array(24).fill(10));
   const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
@@ -224,11 +233,13 @@ export default function VoiceVisualizer({
 
   const colors = getStateColors();
   const activeTheme = THEMES[theme];
+  const currentMood = getMoodById(selectedMood);
+  const isDuringCall = callPhase === "ringing" || callPhase === "active";
 
   return (
     <div
       id="voice-visualizer-card"
-      className={`relative flex flex-col items-center justify-between h-[480px] p-6 rounded-3xl border ${activeTheme.borderColor} ${activeTheme.cardBg} backdrop-blur-xl shadow-2xl overflow-hidden group`}
+      className={`relative flex flex-col items-center justify-between min-h-[500px] h-auto p-6 rounded-3xl border ${activeTheme.borderColor} ${activeTheme.cardBg} backdrop-blur-xl shadow-2xl overflow-hidden group`}
     >
       {/* Background glow overlay */}
       <div
@@ -241,7 +252,7 @@ export default function VoiceVisualizer({
       {/* Top Header: Shibani Roy & Live Phase Status */}
       <div className="flex flex-col items-center justify-center text-center">
         <h2 className="text-base font-semibold tracking-tight text-white font-sans">
-          Shibani Roy
+          Shibani Roy{isDuringCall && selectedMood !== "normal" ? ` · ${currentMood.label}` : ""}
         </h2>
         <div
           aria-live="polite"
@@ -497,6 +508,47 @@ export default function VoiceVisualizer({
           </div>
           <p className="text-[10px] text-neutral-500">
             Using Bluetooth? Select built-in mic if audio has echo.
+          </p>
+        </div>
+      )}
+
+      {/* Role-Play Mood Selector (only while no call is active: idle, ended or failed) */}
+      {(callPhase === "idle" || callPhase === "ended" || callPhase === "failed") && (
+        <div className="w-full max-w-sm mx-auto flex flex-col items-center gap-1.5 my-2 z-10">
+          <div className="w-full overflow-x-auto no-scrollbar py-1 px-1 flex items-center justify-start sm:justify-center gap-1.5 scroll-smooth">
+            {MOODS.map((mood) => {
+              const isSelected = selectedMood === mood.id;
+              const isLocked = mood.tier === "pro" && !isPro;
+
+              return (
+                <button
+                  key={mood.id}
+                  type="button"
+                  onClick={() => {
+                    if (isLocked) {
+                      onUpgrade?.();
+                    } else {
+                      onSelectMood?.(mood.id);
+                    }
+                  }}
+                  title={isLocked ? `${mood.label} (Pro feature)` : mood.tagline}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all whitespace-nowrap cursor-pointer shrink-0 ${
+                    isSelected
+                      ? `bg-gradient-to-r ${activeTheme.accentGradient} text-white shadow-md border border-white/20`
+                      : `bg-white/5 hover:bg-white/10 text-neutral-300 border border-white/10 hover:border-white/20`
+                  }`}
+                >
+                  <span>{mood.emoji}</span>
+                  <span>{mood.label}</span>
+                  {isLocked && (
+                    <Lock className="w-3 h-3 text-amber-400/90 ml-0.5" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <p className="text-[11px] text-neutral-400 font-sans tracking-tight text-center">
+            {currentMood.tagline}
           </p>
         </div>
       )}
