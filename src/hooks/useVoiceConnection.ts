@@ -73,6 +73,7 @@ export function useVoiceConnection({
   const isSilenceHangupRef = useRef<boolean>(false);
   const hasSentPickedUpRef = useRef<boolean>(false);
   const serverReadyRef = useRef<boolean>(false);
+  const isConnectingRef = useRef<boolean>(false);
   const selectedMoodRef = useRef<string>(selectedMood);
 
   useEffect(() => {
@@ -213,10 +214,23 @@ export function useVoiceConnection({
       volumePollIdRef.current = null;
     }
 
-    // Close WebSocket
+    // Close WebSocket and clean up handlers
     serverReadyRef.current = false;
+    isConnectingRef.current = false;
+    if (minRingTimeoutRef.current) {
+      clearTimeout(minRingTimeoutRef.current);
+      minRingTimeoutRef.current = null;
+    }
+    if (connectingTimeoutRef.current) {
+      clearTimeout(connectingTimeoutRef.current);
+      connectingTimeoutRef.current = null;
+    }
     if (wsRef.current) {
       try {
+        wsRef.current.onopen = null;
+        wsRef.current.onmessage = null;
+        wsRef.current.onerror = null;
+        wsRef.current.onclose = null;
         wsRef.current.close();
       } catch (e) {}
       wsRef.current = null;
@@ -243,6 +257,7 @@ export function useVoiceConnection({
 
     // Clean up input pipeline
     if (inputProcessorRef.current) {
+      inputProcessorRef.current.onaudioprocess = null;
       inputProcessorRef.current.disconnect();
       inputProcessorRef.current = null;
     }
@@ -316,6 +331,7 @@ export function useVoiceConnection({
   const disconnect = useCallback((isUserHangup: boolean = false) => {
     console.log("[AudioEngine] Initiating disconnect... isUserHangup:", isUserHangup);
     serverReadyRef.current = false;
+    isConnectingRef.current = false;
 
     if (connectingTimeoutRef.current) {
       clearTimeout(connectingTimeoutRef.current);
@@ -510,63 +526,77 @@ export function useVoiceConnection({
    * Establishes full-duplex WebSocket connection to our Express Live WS gateway
    */
   const connect = useCallback(async (overrideMood?: string) => {
-    if (overrideMood) {
-      selectedMoodRef.current = overrideMood;
+    // 4. Guard connect() with a ref: ignore calls while a socket is CONNECTING/OPEN or a connect is in progress
+    if (isConnectingRef.current) {
+      console.log("[AudioEngine] Connect ignored: connection attempt already in progress");
+      return;
     }
-    // Resume sound audio context during user click gesture
-    getSoundAudioContext();
-
-    // Reset failure and call duration states
-    if (endedPhaseTimerRef.current) {
-      clearTimeout(endedPhaseTimerRef.current);
-      endedPhaseTimerRef.current = null;
+    if (
+      wsRef.current &&
+      (wsRef.current.readyState === WebSocket.CONNECTING || wsRef.current.readyState === WebSocket.OPEN)
+    ) {
+      console.log("[AudioEngine] Connect ignored: WebSocket already active");
+      return;
     }
-    if (connectingTimeoutRef.current) {
-      clearTimeout(connectingTimeoutRef.current);
-      connectingTimeoutRef.current = null;
-    }
-    if (minRingTimeoutRef.current) {
-      clearTimeout(minRingTimeoutRef.current);
-      minRingTimeoutRef.current = null;
-    }
-
-    hasHandledFailureRef.current = false;
-    wasEverActiveRef.current = false;
-    hasWarned1MinRef.current = false;
-    hasHandledLimitRef.current = false;
-    hasHandledSilenceRef.current = false;
-    isDisconnectingGracefullyRef.current = false;
-    isQuotaHangupRef.current = false;
-    isSilenceHangupRef.current = false;
-    hasSentPickedUpRef.current = false;
-    serverReadyRef.current = false;
-    lastAudioActivityRef.current = Date.now();
-    setFailureReason(null);
-    setIsCallDropped(false);
-    setIsSilenceHangup(false);
-    setIsQuotaHangup(false);
-    setIs1MinWarningActive(false);
-
-    // Stop all background call sounds or active operator speech
-    stopAllCallSounds();
-
-    // Clean up internal connections cleanly before starting new call
-    internalDisconnect();
-
-    setState("connecting");
-    updateCallPhase("ringing");
-
-    // Start ringback tone immediately
-    startRingback();
-    callStartTimeRef.current = Date.now();
-
-    // Treat a connection staying in connecting for more than 15s as timeout failure
-    connectingTimeoutRef.current = setTimeout(() => {
-      console.warn("[AudioEngine] Connection timed out after 15s");
-      failCall("timeout");
-    }, 15000);
+    isConnectingRef.current = true;
 
     try {
+      if (overrideMood) {
+        selectedMoodRef.current = overrideMood;
+      }
+      // Resume sound audio context during user click gesture
+      getSoundAudioContext();
+
+      // Reset failure and call duration states
+      if (endedPhaseTimerRef.current) {
+        clearTimeout(endedPhaseTimerRef.current);
+        endedPhaseTimerRef.current = null;
+      }
+      if (connectingTimeoutRef.current) {
+        clearTimeout(connectingTimeoutRef.current);
+        connectingTimeoutRef.current = null;
+      }
+      if (minRingTimeoutRef.current) {
+        clearTimeout(minRingTimeoutRef.current);
+        minRingTimeoutRef.current = null;
+      }
+
+      hasHandledFailureRef.current = false;
+      wasEverActiveRef.current = false;
+      hasWarned1MinRef.current = false;
+      hasHandledLimitRef.current = false;
+      hasHandledSilenceRef.current = false;
+      isDisconnectingGracefullyRef.current = false;
+      isQuotaHangupRef.current = false;
+      isSilenceHangupRef.current = false;
+      hasSentPickedUpRef.current = false;
+      serverReadyRef.current = false;
+      lastAudioActivityRef.current = Date.now();
+      setFailureReason(null);
+      setIsCallDropped(false);
+      setIsSilenceHangup(false);
+      setIsQuotaHangup(false);
+      setIs1MinWarningActive(false);
+
+      // Stop all background call sounds or active operator speech
+      stopAllCallSounds();
+
+      // Clean up internal connections cleanly before starting new call
+      internalDisconnect();
+
+      setState("connecting");
+      updateCallPhase("ringing");
+
+      // Start ringback tone immediately
+      startRingback();
+      callStartTimeRef.current = Date.now();
+
+      // Treat a connection staying in connecting for more than 15s as timeout failure
+      connectingTimeoutRef.current = setTimeout(() => {
+        console.warn("[AudioEngine] Connection timed out after 15s");
+        failCall("timeout");
+      }, 15000);
+
       // Request Screen Wake Lock on connect
       await requestWakeLock();
 
@@ -690,6 +720,10 @@ export function useVoiceConnection({
       inAnalyser.connect(inProcessor);
       inProcessor.connect(inCtx.destination); // Required for process event loop
 
+      // Reset server ready state and pickedUp state strictly before socket creation
+      serverReadyRef.current = false;
+      hasSentPickedUpRef.current = false;
+
       // Build WebSocket URL
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const token = getAuthenticatedToken() || "";
@@ -699,9 +733,14 @@ export function useVoiceConnection({
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
+      // 1. ws.onopen must send ONLY the auth message ({type:"auth", token, mood}).
       ws.onopen = () => {
         console.log("[AudioEngine] WebSocket opened, sending auth token and mood");
-        ws.send(JSON.stringify({ type: "auth", token: token, mood: selectedMoodRef.current || "normal" }));
+        try {
+          ws.send(JSON.stringify({ type: "auth", token: token, mood: selectedMoodRef.current || "normal" }));
+        } catch (e) {
+          console.error("[AudioEngine] Error sending auth message:", e);
+        }
       };
 
       // Configure microphone chunk dispatch
@@ -715,12 +754,16 @@ export function useVoiceConnection({
         const float32Array = e.inputBuffer.getChannelData(0);
         const base64Pcm = float32ToPcm16Base64(float32Array);
 
-        ws.send(
-          JSON.stringify({
-            type: "audio",
-            data: base64Pcm,
-          })
-        );
+        try {
+          ws.send(
+            JSON.stringify({
+              type: "audio",
+              data: base64Pcm,
+            })
+          );
+        } catch (err) {
+          console.warn("[AudioEngine] Error sending audio chunk:", err);
+        }
 
         setState((current) => {
           if (current === "connected" || current === "listening") {
@@ -879,6 +922,7 @@ export function useVoiceConnection({
       ws.onclose = () => {
         console.log("[AudioEngine] WebSocket connection closed");
         serverReadyRef.current = false;
+        isConnectingRef.current = false;
         if (!wasEverActiveRef.current && callPhaseRef.current === "ringing") {
           failCall("server");
         } else {
@@ -888,6 +932,8 @@ export function useVoiceConnection({
 
       ws.onerror = (e) => {
         console.error("[AudioEngine] WebSocket experienced an error:", e);
+        serverReadyRef.current = false;
+        isConnectingRef.current = false;
         if (!wasEverActiveRef.current && callPhaseRef.current === "ringing") {
           failCall("server");
         } else {
@@ -959,6 +1005,8 @@ export function useVoiceConnection({
         errMsg.includes("microphone");
 
       failCall(isMic ? "mic" : "server");
+    } finally {
+      isConnectingRef.current = false;
     }
   }, [
     disconnect,
