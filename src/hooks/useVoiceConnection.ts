@@ -583,6 +583,7 @@ export function useVoiceConnection({
 
       // Clean up internal connections cleanly before starting new call
       internalDisconnect();
+      isConnectingRef.current = true;
 
       setState("connecting");
       updateCallPhase("ringing");
@@ -734,7 +735,7 @@ export function useVoiceConnection({
       wsRef.current = ws;
 
       // 1. ws.onopen must send ONLY the auth message ({type:"auth", token, mood}).
-      ws.onopen = () => {
+      const sendAuth = () => {
         console.log("[AudioEngine] WebSocket opened, sending auth token and mood");
         try {
           ws.send(JSON.stringify({ type: "auth", token: token, mood: selectedMoodRef.current || "normal" }));
@@ -742,6 +743,12 @@ export function useVoiceConnection({
           console.error("[AudioEngine] Error sending auth message:", e);
         }
       };
+
+      if (ws.readyState === WebSocket.OPEN) {
+        sendAuth();
+      } else {
+        ws.onopen = sendAuth;
+      }
 
       // Configure microphone chunk dispatch
       inProcessor.onaudioprocess = (e) => {

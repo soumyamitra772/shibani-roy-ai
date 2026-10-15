@@ -3049,12 +3049,11 @@ async function startServer() {
     let usedSeconds = 0;
     let limitSeconds = 0;
 
-    const authTimeout = setTimeout(() => {
-      if (!isAuthenticated) {
-        clientWs.send(JSON.stringify({ type: "error", message: "Authentication timeout." }));
-        clientWs.close();
+    const idleSocketTimeout = setTimeout(() => {
+      if (!authStarted) {
+        try { clientWs.close(); } catch (e) {}
       }
-    }, 10000);
+    }, 60000);
 
     clientWs.on("message", async (rawData) => {
       try {
@@ -3064,13 +3063,13 @@ async function startServer() {
           if (msg.type !== "auth") {
             const msSinceOpen = Date.now() - socketOpenedAt;
             console.warn("WS rejected", { firstMessageType: msg?.type, authStarted, msSinceOpen });
-            clearTimeout(authTimeout);
+            clearTimeout(idleSocketTimeout);
             clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Expected auth handshake as first message." }));
             clientWs.close();
             return;
           }
           authStarted = true;
-          clearTimeout(authTimeout);
+          clearTimeout(idleSocketTimeout);
           const token = msg.token;
 
           if (supabase) {
@@ -3079,13 +3078,19 @@ async function startServer() {
               clientWs.close();
               return;
             }
-            const { data: { user }, error } = await supabase.auth.getUser(token);
-            if (error || !user) {
-              clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Invalid or expired session." }));
+            try {
+              const { data: { user }, error } = await supabase.auth.getUser(token);
+              if (error || !user) {
+                clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Invalid or expired session." }));
+                clientWs.close();
+                return;
+              }
+              userId = user.id;
+            } catch (err: any) {
+              clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Failed to verify session." }));
               clientWs.close();
               return;
             }
-            userId = user.id;
           } else if (msg.userId) {
             userId = msg.userId;
           }
@@ -3332,7 +3337,7 @@ async function startServer() {
         clearInterval(voiceCheckInterval);
         voiceCheckInterval = null;
       }
-      clearTimeout(authTimeout);
+      clearTimeout(idleSocketTimeout);
       console.log("Client WS closed, cleaning up Gemini Live session");
       if (session) {
         try {
