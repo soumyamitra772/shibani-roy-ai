@@ -5,11 +5,12 @@
 
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Mic, MicOff, Phone, PhoneOff, Camera, Sparkles, Lock } from "lucide-react";
+import { Mic, MicOff, Phone, PhoneOff, Camera, Sparkles, Lock, ChevronDown } from "lucide-react";
 import { AssistantState } from "../types";
 import { ThemeId, THEMES } from "../utils/themes";
 import { CallPhase, FailureReason } from "../hooks/useVoiceConnection";
 import { MOODS, MoodId, getMoodById } from "../utils/moods";
+import MoodPicker from "./MoodPicker";
 
 interface VoiceVisualizerProps {
   state: AssistantState;
@@ -33,6 +34,7 @@ interface VoiceVisualizerProps {
   isPro?: boolean;
   selectedMood?: MoodId;
   onSelectMood?: (moodId: MoodId) => void;
+  onLockedMoodClick?: (moodId: MoodId) => void;
   onUpgrade?: () => void;
 }
 
@@ -58,11 +60,23 @@ export default function VoiceVisualizer({
   isPro = false,
   selectedMood = "normal",
   onSelectMood,
+  onLockedMoodClick,
   onUpgrade,
 }: VoiceVisualizerProps) {
   const [bars, setBars] = useState<number[]>(Array(24).fill(10));
   const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedMicId, setSelectedMicId] = useState<string>("");
+  const [isMoodPickerOpen, setIsMoodPickerOpen] = useState(false);
+  const triggerButtonRef = useRef<HTMLButtonElement>(null);
+
+  // Close picker when selectedMood successfully changes
+  const prevMoodRef = useRef(selectedMood);
+  useEffect(() => {
+    if (prevMoodRef.current !== selectedMood) {
+      prevMoodRef.current = selectedMood;
+      setIsMoodPickerOpen(false);
+    }
+  }, [selectedMood]);
 
   // Call Duration Timer
   const [timerText, setTimerText] = useState("00:00");
@@ -512,44 +526,27 @@ export default function VoiceVisualizer({
         </div>
       )}
 
-      {/* Role-Play Mood Selector (only while no call is active: idle, ended or failed) */}
+      {/* Role-Play Mood Button (only while no call is active: idle, ended or failed) */}
       {(callPhase === "idle" || callPhase === "ended" || callPhase === "failed") && (
-        <div className="w-full max-w-sm mx-auto flex flex-col items-center gap-1.5 my-2 z-10">
-          <div className="w-full overflow-x-auto no-scrollbar py-1 px-1 flex items-center justify-start sm:justify-center gap-1.5 scroll-smooth">
-            {MOODS.map((mood) => {
-              const isSelected = selectedMood === mood.id;
-              const isLocked = mood.tier === "pro" && !isPro;
-
-              return (
-                <button
-                  key={mood.id}
-                  type="button"
-                  onClick={() => {
-                    if (isLocked) {
-                      onUpgrade?.();
-                    } else {
-                      onSelectMood?.(mood.id);
-                    }
-                  }}
-                  title={isLocked ? `${mood.label} (Pro feature)` : mood.tagline}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all whitespace-nowrap cursor-pointer shrink-0 ${
-                    isSelected
-                      ? `bg-gradient-to-r ${activeTheme.accentGradient} text-white shadow-md border border-white/20`
-                      : `bg-white/5 hover:bg-white/10 text-neutral-300 border border-white/10 hover:border-white/20`
-                  }`}
-                >
-                  <span>{mood.emoji}</span>
-                  <span>{mood.label}</span>
-                  {isLocked && (
-                    <Lock className="w-3 h-3 text-amber-400/90 ml-0.5" />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-          <p className="text-[11px] text-neutral-400 font-sans tracking-tight text-center">
-            {currentMood.tagline}
-          </p>
+        <div className="w-full max-w-xs mx-auto flex justify-center my-2 z-10">
+          <button
+            ref={triggerButtonRef}
+            type="button"
+            onClick={() => setIsMoodPickerOpen(true)}
+            aria-haspopup="dialog"
+            aria-expanded={isMoodPickerOpen}
+            className={`min-h-[44px] px-5 py-2.5 rounded-full border text-xs font-medium flex items-center justify-between gap-3 transition-all shadow-sm cursor-pointer ${
+              selectedMood !== "normal"
+                ? `bg-gradient-to-r ${activeTheme.accentGradient} text-white border-white/20 shadow-md hover:brightness-110`
+                : "bg-neutral-900 border-neutral-700 text-neutral-200 hover:text-white hover:border-neutral-600"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <span className="text-base leading-none select-none">{currentMood.emoji}</span>
+              <span className="font-semibold tracking-tight">Role-play: {currentMood.label}</span>
+            </div>
+            <ChevronDown className="w-4 h-4 opacity-70 shrink-0" />
+          </button>
         </div>
       )}
 
@@ -614,6 +611,26 @@ export default function VoiceVisualizer({
           </div>
         )}
       </div>
+
+      {/* Role-Play Mood Picker Modal */}
+      <MoodPicker
+        isOpen={isMoodPickerOpen}
+        onClose={() => setIsMoodPickerOpen(false)}
+        selectedMood={selectedMood}
+        onSelectMood={(moodId) => {
+          onSelectMood?.(moodId);
+        }}
+        onLockedMoodClick={(moodId) => {
+          if (onLockedMoodClick) {
+            onLockedMoodClick(moodId);
+          } else {
+            onUpgrade?.();
+          }
+        }}
+        isPro={isPro}
+        theme={theme}
+        triggerRef={triggerButtonRef}
+      />
     </div>
   );
 }

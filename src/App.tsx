@@ -25,12 +25,13 @@ import { MoodId, MOODS, getMoodById } from "./utils/moods";
 interface UpgradeModalProps {
   session: any;
   isPro?: boolean;
+  subtitle?: string;
   onClose: () => void;
   onSuccess: () => void;
   onError: (msg: string) => void;
 }
 
-function UpgradeModal({ session, isPro, onClose, onSuccess, onError }: UpgradeModalProps) {
+function UpgradeModal({ session, isPro, subtitle, onClose, onSuccess, onError }: UpgradeModalProps) {
   const [selectedPlan, setSelectedPlan] = useState<"monthly" | "yearly">("yearly");
   const [loading, setLoading] = useState(false);
 
@@ -230,7 +231,7 @@ function UpgradeModal({ session, isPro, onClose, onSuccess, onError }: UpgradeMo
               </h3>
             </div>
             <p className="text-xs text-gray-400 leading-relaxed">
-              You've reached your free limit. Upgrade to keep chatting with Shibani.
+              {subtitle || "You've reached your free limit. Upgrade to keep chatting with Shibani."}
             </p>
           </div>
           <button
@@ -321,6 +322,12 @@ export default function App() {
   const [chatLoading, setChatLoading] = useState(false);
   const [notification, setNotification] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const [upgradeContext, setUpgradeContext] = useState<null | { type: "mood"; moodId: string }>(null);
+
+  const openUpgradeModal = (context?: { type: "mood"; moodId: string } | null) => {
+    setUpgradeContext(context || null);
+    setShowUpgradeModal(true);
+  };
 
   // Persistent conversation identifier
   const [conversationId, setConversationId] = useState<string>(() => {
@@ -366,7 +373,7 @@ export default function App() {
     const userHasProAccess = isPro || isAdmin;
 
     if (moodConfig.tier === "pro" && !userHasProAccess) {
-      setShowUpgradeModal(true);
+      openUpgradeModal({ type: "mood", moodId });
       return;
     }
 
@@ -748,7 +755,7 @@ export default function App() {
       if (errorMsg === "VOICE_LIMIT_REACHED") {
         triggerNotification("You've used your voice minutes for today 🌸 Resets at midnight IST", "info");
       } else if (isLocked || errorMsg === "CHAT_LIMIT_REACHED") {
-        setShowUpgradeModal(true);
+        openUpgradeModal();
       } else if (
         errorMsg === "PRO_IMAGE_LIMIT_REACHED" ||
         errorMsg === "PRO_TOOL_LIMIT_REACHED" ||
@@ -793,7 +800,7 @@ export default function App() {
     onToolCallExecuted: (logMessage) => {
       const isLocked = logMessage.includes("TOOL_LOCKED") || logMessage.includes("IMAGE_LOCKED");
       if (isLocked) {
-        setShowUpgradeModal(true);
+        openUpgradeModal();
         return;
       }
       // Feed voice-mode tool logs into the chat history for seamless session integrity
@@ -1022,7 +1029,7 @@ export default function App() {
                 result.message.includes("IMAGE_LOCKED");
 
               if (isLocked || result.message === "CHAT_LIMIT_REACHED") {
-                setShowUpgradeModal(true);
+                openUpgradeModal();
               } else if (
                 result.message === "PRO_IMAGE_LIMIT_REACHED" ||
                 result.message === "PRO_TOOL_LIMIT_REACHED" ||
@@ -1120,7 +1127,7 @@ export default function App() {
         msg.includes("IMAGE_LOCKED");
 
       if (msg === "CHAT_LIMIT_REACHED" || isLocked) {
-        setShowUpgradeModal(true);
+        openUpgradeModal();
       } else if (
         msg === "PRO_IMAGE_LIMIT_REACHED" ||
         msg === "PRO_TOOL_LIMIT_REACHED" ||
@@ -1233,7 +1240,7 @@ export default function App() {
           avatarPreference={avatarPreference}
           onAvatarPreferenceChange={handleAvatarPreferenceChange}
           isPro={isPro}
-          onUpgradeClick={() => setShowUpgradeModal(true)}
+          onUpgradeClick={() => openUpgradeModal()}
           isAdmin={isAdmin}
           onAdminClick={() => setShowAdmin(true)}
         />
@@ -1277,7 +1284,7 @@ export default function App() {
                         isPro={isPro || isAdmin}
                         selectedMood={selectedMood}
                         onSelectMood={handleSelectMood}
-                        onUpgrade={() => setShowUpgradeModal(true)}
+                        onLockedMoodClick={(moodId) => openUpgradeModal({ type: "mood", moodId })}
                       />
                     </div>
 
@@ -1405,8 +1412,21 @@ export default function App() {
           <UpgradeModal
             session={session}
             isPro={isPro}
-            onClose={() => setShowUpgradeModal(false)}
+            subtitle={
+              upgradeContext?.type === "mood"
+                ? (() => {
+                    const m = getMoodById(upgradeContext.moodId);
+                    return `${m.emoji} ${m.label} mode is a Pro feature. Upgrade to unlock all role-play moods and talk to Shibani your way.`;
+                  })()
+                : undefined
+            }
+            onClose={() => {
+              setShowUpgradeModal(false);
+              setUpgradeContext(null);
+            }}
             onSuccess={() => {
+              setShowUpgradeModal(false);
+              setUpgradeContext(null);
               triggerNotification("Successfully upgraded to Pro! 🎉", "success");
               fetchUserStatus();
             }}
@@ -1419,7 +1439,7 @@ export default function App() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm"
+            className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm"
           >
             <motion.div
               initial={{ scale: 0.95, opacity: 0 }}
