@@ -72,6 +72,7 @@ export function useVoiceConnection({
   const isQuotaHangupRef = useRef<boolean>(false);
   const isSilenceHangupRef = useRef<boolean>(false);
   const hasSentPickedUpRef = useRef<boolean>(false);
+  const serverReadyRef = useRef<boolean>(false);
   const selectedMoodRef = useRef<string>(selectedMood);
 
   useEffect(() => {
@@ -213,6 +214,7 @@ export function useVoiceConnection({
     }
 
     // Close WebSocket
+    serverReadyRef.current = false;
     if (wsRef.current) {
       try {
         wsRef.current.close();
@@ -313,6 +315,7 @@ export function useVoiceConnection({
    */
   const disconnect = useCallback((isUserHangup: boolean = false) => {
     console.log("[AudioEngine] Initiating disconnect... isUserHangup:", isUserHangup);
+    serverReadyRef.current = false;
 
     if (connectingTimeoutRef.current) {
       clearTimeout(connectingTimeoutRef.current);
@@ -536,6 +539,7 @@ export function useVoiceConnection({
     isQuotaHangupRef.current = false;
     isSilenceHangupRef.current = false;
     hasSentPickedUpRef.current = false;
+    serverReadyRef.current = false;
     lastAudioActivityRef.current = Date.now();
     setFailureReason(null);
     setIsCallDropped(false);
@@ -702,7 +706,8 @@ export function useVoiceConnection({
 
       // Configure microphone chunk dispatch
       inProcessor.onaudioprocess = (e) => {
-        if (ws.readyState !== WebSocket.OPEN) return;
+        // Must return early unless serverReadyRef is true and socket is open
+        if (!serverReadyRef.current || ws.readyState !== WebSocket.OPEN) return;
         
         // If muted, do not send voice packets to Gemini
         if (isMutedRef.current) return;
@@ -733,6 +738,7 @@ export function useVoiceConnection({
           switch (msg.type) {
             case "connected": {
               console.log("[AudioEngine] Voice connection active from server");
+              serverReadyRef.current = true;
               if (connectingTimeoutRef.current) {
                 clearTimeout(connectingTimeoutRef.current);
                 connectingTimeoutRef.current = null;
@@ -761,7 +767,7 @@ export function useVoiceConnection({
                   playPickupBlip();
 
                   // Send pickedUp signal so Shibani speaks the opening greeting
-                  if (!hasSentPickedUpRef.current && ws.readyState === WebSocket.OPEN) {
+                  if (!hasSentPickedUpRef.current && serverReadyRef.current && ws.readyState === WebSocket.OPEN) {
                     hasSentPickedUpRef.current = true;
                     try {
                       ws.send(JSON.stringify({ type: "pickedUp" }));
@@ -872,6 +878,7 @@ export function useVoiceConnection({
 
       ws.onclose = () => {
         console.log("[AudioEngine] WebSocket connection closed");
+        serverReadyRef.current = false;
         if (!wasEverActiveRef.current && callPhaseRef.current === "ringing") {
           failCall("server");
         } else {

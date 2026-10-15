@@ -3033,6 +3033,8 @@ async function startServer() {
 
   wss.on("connection", (clientWs) => {
     console.log("Client connected to Live WS proxy");
+    const socketOpenedAt = Date.now();
+    let authStarted = false;
     let session: any = null;
     let isAuthenticated = false;
     let userId = "anonymous-user";
@@ -3043,6 +3045,7 @@ async function startServer() {
     let resolvedMoodId = "normal";
     let moodDenied = false;
     let wsMemories: MemoryItem[] = [];
+    let hasRecentChat = false;
     let usedSeconds = 0;
     let limitSeconds = 0;
 
@@ -3057,183 +3060,236 @@ async function startServer() {
       try {
         const msg = JSON.parse(rawData.toString());
 
-        if (!isAuthenticated) {
-          if (msg.type === "auth") {
-            clearTimeout(authTimeout);
-            const token = msg.token;
-
-            if (supabase) {
-              if (!token) {
-                clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Missing authentication token." }));
-                clientWs.close();
-                return;
-              }
-              const { data: { user }, error } = await supabase.auth.getUser(token);
-              if (error || !user) {
-                clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Invalid or expired session." }));
-                clientWs.close();
-                return;
-              }
-              userId = user.id;
-            } else if (msg.userId) {
-              userId = msg.userId;
-            }
-
-            isAuthenticated = true;
-
-            // Check second-based voice quota before connecting
-            const voiceToday = getKolkataDateString();
-            const userIsProOrAdmin = isAdmin(userId) || (await isPro(userId));
-            const limitMinutes = userIsProOrAdmin ? VOICE_LIMIT_PRO_MIN : VOICE_LIMIT_FREE_MIN;
-            limitSeconds = limitMinutes * 60;
-            usedSeconds = await getVoiceUsedSeconds(userId, voiceToday);
-            const remainingSeconds = Math.max(0, limitSeconds - usedSeconds);
-
-            // Resolve and validate role-play mood
-            const rawMood = typeof msg.mood === "string" ? msg.mood.toLowerCase().trim() : "normal";
-            const moodConfig = ROLE_MOODS[rawMood];
-            if (!moodConfig) {
-              resolvedMoodId = "normal";
-              moodDenied = false;
-            } else if (moodConfig.tier === "pro" && !userIsProOrAdmin) {
-              resolvedMoodId = "normal";
-              moodDenied = true;
-            } else {
-              resolvedMoodId = rawMood;
-              moodDenied = false;
-            }
-
-            if (remainingSeconds < 10) {
-              clientWs.send(JSON.stringify({ type: "error", message: "VOICE_LIMIT_REACHED" }));
-              clientWs.close();
-              return;
-            }
-
-            // Track session start time so we can record duration on disconnect
-            voiceSessionStart = Date.now();
-            let sent1MinWarning = false;
-
-            if (voiceCheckInterval) clearInterval(voiceCheckInterval);
-            voiceCheckInterval = setInterval(async () => {
-              const currentElapsedSeconds = Math.floor((Date.now() - voiceSessionStart) / 1000);
-              const currentRemaining = limitSeconds - (usedSeconds + currentElapsedSeconds);
-
-              // 1-minute warning signal to client
-              if (currentRemaining <= 60 && currentRemaining > 50 && !sent1MinWarning) {
-                sent1MinWarning = true;
-                clientWs.send(JSON.stringify({
-                  type: "warning",
-                  warning: "1_MINUTE_REMAINING",
-                  remainingSeconds: Math.max(0, currentRemaining)
-                }));
-              }
-
-              if (currentRemaining <= 0) {
-                if (voiceCheckInterval) {
-                  clearInterval(voiceCheckInterval);
-                  voiceCheckInterval = null;
-                }
-                clientWs.send(JSON.stringify({ type: "limit_reached", message: "VOICE_LIMIT_REACHED" }));
-                setTimeout(() => {
-                  if (session) {
-                    try { session.close(); } catch (e) {}
-                  }
-                  clientWs.close();
-                }, 4000);
-              }
-            }, 5000);
-
-            try {
-              wsMemories = userIsProOrAdmin ? await recallFactsFromDb(userId) : [];
-              const isFreeUser = !userIsProOrAdmin;
-              const systemInstruction = getSystemInstruction(wsMemories, isFreeUser, resolvedMoodId);
-
-              const wsAvailableDeclarations = userIsProOrAdmin
-                ? FUNCTION_DECLARATIONS
-                : FUNCTION_DECLARATIONS.filter((d: any) => !FREE_LOCKED_TOOLS.has(d.name));
-
-              session = await ai.live.connect({
-                model: "gemini-3.1-flash-live-preview",
-                config: {
-                  responseModalities: [Modality.AUDIO],
-                  speechConfig: {
-                    voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } }, // Aoede (Female) matches Shibani
-                  },
-                  systemInstruction: systemInstruction,
-                  tools: [{ functionDeclarations: wsAvailableDeclarations }]
-                },
-                callbacks: {
-                  onmessage: (message: any) => {
-                    // Forward audio to the client
-                    const audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-                    if (audio) {
-                      clientWs.send(JSON.stringify({ type: "audio", data: audio }));
-                    }
-
-                    // Forward interruption signal
-                    if (message.serverContent?.interrupted) {
-                      clientWs.send(JSON.stringify({ type: "interrupted" }));
-                    }
-
-                    // Forward tool calls with all properties preserved (including thought_signature)
-                    const functionCalls = message.toolCall?.functionCalls;
-                    if (functionCalls && functionCalls.length > 0) {
-                      for (const call of functionCalls) {
-                        const thought_sig = call.thought_signature || call.thoughtSignature || (call as any).thought_signature || (call as any).thoughtSignature;
-                        clientWs.send(JSON.stringify({
-                          type: "toolCall",
-                          toolCall: {
-                            ...call,
-                            id: call.id,
-                            name: call.name,
-                            args: call.args,
-                            thought_signature: thought_sig,
-                            thoughtSignature: thought_sig
-                          }
-                        }));
-                      }
-                    }
-                  },
-                  onclose: () => {
-                    console.log("Gemini Live API session closed");
-                    clientWs.send(JSON.stringify({ type: "disconnected" }));
-                    clientWs.close();
-                  },
-                  onerror: (err: any) => {
-                    console.error("Gemini Live API error:", err);
-                    Sentry.captureException(err, { tags: { feature: "voice" } });
-                    clientWs.send(JSON.stringify({ type: "error", message: err.message || "Gemini Live session error" }));
-                  }
-                }
-              });
-
-              console.log("Gemini Live API connected and proxying");
-              clientWs.send(JSON.stringify({
-                type: "connected",
-                remainingSeconds,
-                limitSeconds
-              }));
-
-              // Send mood confirmation right after connected
-              clientWs.send(JSON.stringify({
-                type: "mood",
-                applied: resolvedMoodId,
-                denied: moodDenied
-              }));
-            } catch (error: any) {
-              console.error("Failed to connect to Gemini Live:", error);
-              Sentry.captureException(error, { tags: { feature: "voice" } });
-              clientWs.send(JSON.stringify({ type: "error", message: error.message || "Failed to establish Gemini Live session" }));
-              clientWs.close();
-              return;
-            }
-          } else {
+        if (!authStarted) {
+          if (msg.type !== "auth") {
+            const msSinceOpen = Date.now() - socketOpenedAt;
+            console.warn("WS rejected", { firstMessageType: msg?.type, authStarted, msSinceOpen });
             clearTimeout(authTimeout);
             clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Expected auth handshake as first message." }));
             clientWs.close();
             return;
           }
+          authStarted = true;
+          clearTimeout(authTimeout);
+          const token = msg.token;
+
+          if (supabase) {
+            if (!token) {
+              clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Missing authentication token." }));
+              clientWs.close();
+              return;
+            }
+            const { data: { user }, error } = await supabase.auth.getUser(token);
+            if (error || !user) {
+              clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Invalid or expired session." }));
+              clientWs.close();
+              return;
+            }
+            userId = user.id;
+          } else if (msg.userId) {
+            userId = msg.userId;
+          }
+
+          // 3. Set isAuthenticated = true immediately after the token is verified, BEFORE the slow work
+          isAuthenticated = true;
+
+          // Run independent lookups in parallel with Promise.all, each wrapped in its own try/catch so a failure never blocks the call
+          const voiceToday = getKolkataDateString();
+          const [proResult, usedSecResult, memoriesResult, recentChatResult] = await Promise.all([
+            (async () => {
+              try {
+                return isAdmin(userId) || (await isPro(userId));
+              } catch (e) {
+                console.warn("Failed checking pro status for voice call:", e);
+                return false;
+              }
+            })(),
+            (async () => {
+              try {
+                return await getVoiceUsedSeconds(userId, voiceToday);
+              } catch (e) {
+                console.warn("Failed getting voice usage for voice call:", e);
+                return 0;
+              }
+            })(),
+            (async () => {
+              try {
+                return await recallFactsFromDb(userId);
+              } catch (e) {
+                console.warn("Failed recalling facts for voice call:", e);
+                return [];
+              }
+            })(),
+            (async () => {
+              try {
+                if (!supabase) return false;
+                const { data, error } = await supabase
+                  .from("chat_messages")
+                  .select("id")
+                  .eq("user_id", userId)
+                  .limit(1);
+                return !error && Array.isArray(data) && data.length > 0;
+              } catch (e) {
+                console.warn("Failed checking recent chat context for voice call:", e);
+                return false;
+              }
+            })()
+          ]);
+
+          const userIsProOrAdmin = proResult;
+          usedSeconds = usedSecResult;
+          wsMemories = userIsProOrAdmin ? memoriesResult : [];
+          hasRecentChat = recentChatResult;
+
+          const limitMinutes = userIsProOrAdmin ? VOICE_LIMIT_PRO_MIN : VOICE_LIMIT_FREE_MIN;
+          limitSeconds = limitMinutes * 60;
+          const remainingSeconds = Math.max(0, limitSeconds - usedSeconds);
+
+          // Resolve and validate role-play mood
+          const rawMood = typeof msg.mood === "string" ? msg.mood.toLowerCase().trim() : "normal";
+          const moodConfig = ROLE_MOODS[rawMood];
+          if (!moodConfig) {
+            resolvedMoodId = "normal";
+            moodDenied = false;
+          } else if (moodConfig.tier === "pro" && !userIsProOrAdmin) {
+            resolvedMoodId = "normal";
+            moodDenied = true;
+          } else {
+            resolvedMoodId = rawMood;
+            moodDenied = false;
+          }
+
+          if (remainingSeconds < 10) {
+            clientWs.send(JSON.stringify({ type: "error", message: "VOICE_LIMIT_REACHED" }));
+            clientWs.close();
+            return;
+          }
+
+          // Track session start time so we can record duration on disconnect
+          voiceSessionStart = Date.now();
+          let sent1MinWarning = false;
+
+          if (voiceCheckInterval) clearInterval(voiceCheckInterval);
+          voiceCheckInterval = setInterval(async () => {
+            const currentElapsedSeconds = Math.floor((Date.now() - voiceSessionStart) / 1000);
+            const currentRemaining = limitSeconds - (usedSeconds + currentElapsedSeconds);
+
+            // 1-minute warning signal to client
+            if (currentRemaining <= 60 && currentRemaining > 50 && !sent1MinWarning) {
+              sent1MinWarning = true;
+              clientWs.send(JSON.stringify({
+                type: "warning",
+                warning: "1_MINUTE_REMAINING",
+                remainingSeconds: Math.max(0, currentRemaining)
+              }));
+            }
+
+            if (currentRemaining <= 0) {
+              if (voiceCheckInterval) {
+                clearInterval(voiceCheckInterval);
+                voiceCheckInterval = null;
+              }
+              clientWs.send(JSON.stringify({ type: "limit_reached", message: "VOICE_LIMIT_REACHED" }));
+              setTimeout(() => {
+                if (session) {
+                  try { session.close(); } catch (e) {}
+                }
+                clientWs.close();
+              }, 4000);
+            }
+          }, 5000);
+
+          try {
+            const isFreeUser = !userIsProOrAdmin;
+            const systemInstruction = getSystemInstruction(wsMemories, isFreeUser, resolvedMoodId);
+
+            const wsAvailableDeclarations = userIsProOrAdmin
+              ? FUNCTION_DECLARATIONS
+              : FUNCTION_DECLARATIONS.filter((d: any) => !FREE_LOCKED_TOOLS.has(d.name));
+
+            session = await ai.live.connect({
+              model: "gemini-3.1-flash-live-preview",
+              config: {
+                responseModalities: [Modality.AUDIO],
+                speechConfig: {
+                  voiceConfig: { prebuiltVoiceConfig: { voiceName: "Aoede" } }, // Aoede (Female) matches Shibani
+                },
+                systemInstruction: systemInstruction,
+                tools: [{ functionDeclarations: wsAvailableDeclarations }]
+              },
+              callbacks: {
+                onmessage: (message: any) => {
+                  // Forward audio to the client
+                  const audio = message.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
+                  if (audio) {
+                    clientWs.send(JSON.stringify({ type: "audio", data: audio }));
+                  }
+
+                  // Forward interruption signal
+                  if (message.serverContent?.interrupted) {
+                    clientWs.send(JSON.stringify({ type: "interrupted" }));
+                  }
+
+                  // Forward tool calls with all properties preserved (including thought_signature)
+                  const functionCalls = message.toolCall?.functionCalls;
+                  if (functionCalls && functionCalls.length > 0) {
+                    for (const call of functionCalls) {
+                      const thought_sig = call.thought_signature || call.thoughtSignature || (call as any).thought_signature || (call as any).thoughtSignature;
+                      clientWs.send(JSON.stringify({
+                        type: "toolCall",
+                        toolCall: {
+                          ...call,
+                          id: call.id,
+                          name: call.name,
+                          args: call.args,
+                          thought_signature: thought_sig,
+                          thoughtSignature: thought_sig
+                        }
+                      }));
+                    }
+                  }
+                },
+                onclose: () => {
+                  console.log("Gemini Live API session closed");
+                  clientWs.send(JSON.stringify({ type: "disconnected" }));
+                  clientWs.close();
+                },
+                onerror: (err: any) => {
+                  console.error("Gemini Live API error:", err);
+                  Sentry.captureException(err, { tags: { feature: "voice" } });
+                  clientWs.send(JSON.stringify({ type: "error", message: err.message || "Gemini Live session error" }));
+                }
+              }
+            });
+
+            console.log("Gemini Live API connected and proxying");
+            clientWs.send(JSON.stringify({
+              type: "connected",
+              remainingSeconds,
+              limitSeconds
+            }));
+
+            // Send mood confirmation right after connected
+            clientWs.send(JSON.stringify({
+              type: "mood",
+              applied: resolvedMoodId,
+              denied: moodDenied
+            }));
+          } catch (error: any) {
+            console.error("Failed to connect to Gemini Live:", error);
+            Sentry.captureException(error, { tags: { feature: "voice" } });
+            clientWs.send(JSON.stringify({ type: "error", message: error.message || "Failed to establish Gemini Live session" }));
+            clientWs.close();
+            return;
+          }
+        } else if (!isAuthenticated) {
+          // While authStarted is true and isAuthenticated is false, silently ignore every non-auth message (audio, pickedUp, anything).
+          return;
+        } else if (msg.type === "auth") {
+          // Ignore further "auth" messages once authenticated
+          return;
         } else {
+          // Authenticated & session setup: handle ongoing messages
           if (msg.type === "pickedUp") {
             if (isAuthenticated && session && !hasSentGreeting) {
               hasSentGreeting = true;
@@ -3242,7 +3298,7 @@ async function startServer() {
               // Skip greeting notice if under 30 seconds of voice time remain
               if (currentRemaining >= 30) {
                 const hasHistory = wsMemories.length > 0;
-                const notice = pickGreetingNotice(userId, resolvedMoodId, hasHistory, false);
+                const notice = pickGreetingNotice(userId, resolvedMoodId, hasHistory, hasRecentChat);
                 await injectNotice(session, notice);
               }
             }
