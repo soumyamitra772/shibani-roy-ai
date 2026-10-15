@@ -296,7 +296,7 @@ export function useVoiceConnection({
    * Handles call failure before reaching "active" phase:
    * Sets failure reason, stops ringback, plays operator tones, and speaks operator message.
    */
-  const failCall = useCallback((reason: FailureReason) => {
+  const failCall = useCallback((reason: FailureReason, customMessage?: string) => {
     if (hasHandledFailureRef.current) return;
     hasHandledFailureRef.current = true;
 
@@ -316,12 +316,26 @@ export function useVoiceConnection({
 
     internalDisconnect();
 
+    if (onVoiceError) {
+      if (customMessage) {
+        onVoiceError(customMessage);
+      } else if (reason === "timeout") {
+        onVoiceError("Call connection timed out. Please check your network and try again.");
+      } else if (reason === "mic") {
+        onVoiceError("Microphone access is required. Please check your browser microphone permissions.");
+      } else if (reason === "limit") {
+        onVoiceError("VOICE_LIMIT_REACHED");
+      } else if (reason === "server") {
+        onVoiceError("Call could not connect to server. Please try again.");
+      }
+    }
+
     if (reason) {
       playOperatorTones().then(() => {
         speakOperatorMessage(reason);
       });
     }
-  }, [internalDisconnect, updateCallPhase]);
+  }, [internalDisconnect, onVoiceError, updateCallPhase]);
 
   /**
    * Close and clean up all connections, contexts, and audio nodes.
@@ -592,11 +606,11 @@ export function useVoiceConnection({
       startRingback();
       callStartTimeRef.current = Date.now();
 
-      // Treat a connection staying in connecting for more than 15s as timeout failure
+      // Treat a connection staying in connecting for more than 45s as timeout failure
       connectingTimeoutRef.current = setTimeout(() => {
-        console.warn("[AudioEngine] Connection timed out after 15s");
+        console.warn("[AudioEngine] Connection timed out after 45s");
         failCall("timeout");
-      }, 15000);
+      }, 45000);
 
       // Request Screen Wake Lock on connect
       await requestWakeLock();
@@ -907,16 +921,16 @@ export function useVoiceConnection({
 
             case "error":
               console.error("[AudioEngine] Server error:", msg.message);
-              if (onVoiceError) {
-                onVoiceError(msg.message);
-              }
               if (!wasEverActiveRef.current) {
                 if (msg.message === "VOICE_LIMIT_REACHED") {
-                  failCall("limit");
+                  failCall("limit", msg.message);
                 } else {
-                  failCall("server");
+                  failCall("server", msg.message);
                 }
               } else {
+                if (onVoiceError) {
+                  onVoiceError(msg.message);
+                }
                 disconnect(false);
               }
               break;
@@ -926,12 +940,13 @@ export function useVoiceConnection({
         }
       };
 
-      ws.onclose = () => {
-        console.log("[AudioEngine] WebSocket connection closed");
+      ws.onclose = (event) => {
+        console.log("[AudioEngine] WebSocket connection closed, code:", event.code, "reason:", event.reason);
         serverReadyRef.current = false;
         isConnectingRef.current = false;
         if (!wasEverActiveRef.current && callPhaseRef.current === "ringing") {
-          failCall("server");
+          const reasonText = event.reason ? `Connection closed: ${event.reason}` : undefined;
+          failCall("server", reasonText);
         } else {
           disconnect(false);
         }
@@ -942,7 +957,7 @@ export function useVoiceConnection({
         serverReadyRef.current = false;
         isConnectingRef.current = false;
         if (!wasEverActiveRef.current && callPhaseRef.current === "ringing") {
-          failCall("server");
+          failCall("server", "WebSocket connection failed. Please check your network.");
         } else {
           disconnect(false);
         }
@@ -1011,7 +1026,10 @@ export function useVoiceConnection({
         errMsg.includes("not allowed") ||
         errMsg.includes("microphone");
 
-      failCall(isMic ? "mic" : "server");
+      const userMsg = isMic
+        ? "Microphone access was denied or not found. Please allow microphone permissions."
+        : `Could not start call: ${err.message || "Audio system error"}`;
+      failCall(isMic ? "mic" : "server", userMsg);
     } finally {
       isConnectingRef.current = false;
     }

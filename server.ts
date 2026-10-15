@@ -3055,6 +3055,22 @@ async function startServer() {
       }
     }, 60000);
 
+    const sendWsErrorAndClose = (message: string) => {
+      try {
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(JSON.stringify({ type: "error", message }), () => {
+            setTimeout(() => {
+              try { clientWs.close(); } catch (e) {}
+            }, 300);
+          });
+        } else {
+          try { clientWs.close(); } catch (e) {}
+        }
+      } catch (e) {
+        try { clientWs.close(); } catch (e2) {}
+      }
+    };
+
     clientWs.on("message", async (rawData) => {
       try {
         const msg = JSON.parse(rawData.toString());
@@ -3064,8 +3080,7 @@ async function startServer() {
             const msSinceOpen = Date.now() - socketOpenedAt;
             console.warn("WS rejected", { firstMessageType: msg?.type, authStarted, msSinceOpen });
             clearTimeout(idleSocketTimeout);
-            clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Expected auth handshake as first message." }));
-            clientWs.close();
+            sendWsErrorAndClose("Unauthorized: Expected auth handshake as first message.");
             return;
           }
           authStarted = true;
@@ -3074,21 +3089,18 @@ async function startServer() {
 
           if (supabase) {
             if (!token) {
-              clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Missing authentication token." }));
-              clientWs.close();
+              sendWsErrorAndClose("Unauthorized: Missing authentication token.");
               return;
             }
             try {
               const { data: { user }, error } = await supabase.auth.getUser(token);
               if (error || !user) {
-                clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Invalid or expired session." }));
-                clientWs.close();
+                sendWsErrorAndClose("Unauthorized: Invalid or expired session.");
                 return;
               }
               userId = user.id;
             } catch (err: any) {
-              clientWs.send(JSON.stringify({ type: "error", message: "Unauthorized: Failed to verify session." }));
-              clientWs.close();
+              sendWsErrorAndClose("Unauthorized: Failed to verify session.");
               return;
             }
           } else if (msg.userId) {
@@ -3165,8 +3177,7 @@ async function startServer() {
           }
 
           if (remainingSeconds < 10) {
-            clientWs.send(JSON.stringify({ type: "error", message: "VOICE_LIMIT_REACHED" }));
-            clientWs.close();
+            sendWsErrorAndClose("VOICE_LIMIT_REACHED");
             return;
           }
 
@@ -3283,8 +3294,7 @@ async function startServer() {
           } catch (error: any) {
             console.error("Failed to connect to Gemini Live:", error);
             Sentry.captureException(error, { tags: { feature: "voice" } });
-            clientWs.send(JSON.stringify({ type: "error", message: error.message || "Failed to establish Gemini Live session" }));
-            clientWs.close();
+            sendWsErrorAndClose(error.message || "Failed to establish Gemini Live session");
             return;
           }
         } else if (!isAuthenticated) {
